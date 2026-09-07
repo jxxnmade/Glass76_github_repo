@@ -204,6 +204,11 @@ if(GLASS76_BUILD_UI_SNAPSHOT)
         source/ui/editor.cpp
     )
     target_link_libraries(glass76_ui_snapshot PRIVATE sdk vstgui_support)
+    # Points the tool at the same resource/Fonts CMake copies into
+    # Contents/Resources for the real bundle -- see tools/ui_snapshot.cpp.
+    target_compile_definitions(glass76_ui_snapshot PRIVATE
+        GLASS76_RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/resource"
+    )
     set_target_properties(glass76_ui_snapshot PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )

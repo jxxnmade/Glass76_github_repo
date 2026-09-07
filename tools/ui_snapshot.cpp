@@ -18,6 +18,8 @@
 
 #include "vstgui/lib/cbitmap.h"
 #include "vstgui/lib/coffscreencontext.h"
+#include "vstgui/lib/platform/platformfactory.h"
+#include "vstgui/lib/platform/win32/win32factory.h"
 #include "vstgui/lib/vstguiinit.h"
 
 #include <cstdint>
@@ -110,6 +112,16 @@ int main (int argc, char** argv)
 	CoInitializeEx (nullptr, COINIT_APARTMENTTHREADED);
 
 	VSTGUI::init (GetModuleHandle (nullptr));
+
+	// A real plug-in picks this up from setupVSTGUIBundleSupport(), which the
+	// host only calls when a VSTGUIEditor actually opens inside a loaded VST3
+	// bundle -- this standalone tool never does either, so without this call
+	// the private DirectWrite collection is never populated and every font
+	// silently falls back to a system substitute (Segoe UI / Segoe Script)
+	// instead of the bundled Inter/Inter Display/Allura. GLASS76_RESOURCE_DIR
+	// is resource/, the same folder CMake copies into Contents/Resources.
+	if (auto* win32 = VSTGUI::getPlatformFactory ().asWin32Factory ())
+		win32->setResourceBasePath (GLASS76_RESOURCE_DIR);
 
 	std::string outDir = (argc > 1) ? argv[1] : ".";
 	std::string bgImagePath = (argc > 2) ? argv[2] : "";
