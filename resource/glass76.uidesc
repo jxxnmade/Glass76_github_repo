@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<vstgui-ui-description version="1">
+	<fonts/>
+	<colors/>
+	<template class="CViewContainer" mouse-enabled="true" name="view" opacity="1" origin="0, 0" size="880, 470" transparent="true">
+		<view class="CViewContainer" custom-view-name="root" mouse-enabled="true" opacity="1" origin="0, 0" size="880, 470" transparent="true"/>
+	</template>
+	<variables/>
+</vstgui-ui-description>
