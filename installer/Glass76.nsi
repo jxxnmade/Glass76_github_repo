@@ -117,6 +117,10 @@ Function .onInit
     ${EndIf}
 
     SetRegView 64
+    ; This is a per-machine install, so $SMPROGRAMS has to mean the all-users
+    ; Start menu. Without this it silently means the *installing* user's, and
+    ; the shortcuts vanish for everybody else on the machine.
+    SetShellVarContext all
     StrCpy $DOCDIR "$PROGRAMFILES64\${PUBLISHER}\${PRODUCT}"
 
     ; Reuse the folder a previous version was installed into, so an upgrade
@@ -224,6 +228,7 @@ LangString DESC_SHORTCUTS ${LANG_ENGLISH} "A Start menu folder with the manual a
 ;--- Uninstall ---------------------------------------------------------------
 Function un.onInit
     SetRegView 64
+    SetShellVarContext all   ; must match the install side, or the shortcuts stay
     StrCpy $DOCDIR "$PROGRAMFILES64\${PUBLISHER}\${PRODUCT}"
     ReadRegStr $0 HKLM "${SETTINGSKEY}" "VST3Path"
     ${If} $0 != ""
