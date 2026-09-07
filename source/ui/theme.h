@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //
 // macOS 27 design tokens.
 //
@@ -135,13 +135,16 @@ inline Theme makeLightTheme ()
 	Theme t;
 	t.dark = false;
 
-	t.windowBg = rgba (255, 255, 255, 1.0);
+	// Creme, not pure white -- the kit's #FFFFFF reads as cold and clinical
+	// next to a warm beige accent, so the whole surface is warmed with it.
+	t.windowBg = rgba (250, 246, 237, 1.0);
 	// A plug-in window has no desktop behind it, so the glass has nothing
 	// to sample. These two very faint washes stand in for the wallpaper
 	// bleed a real macOS 27 window picks up -- without them the glass
-	// panels have no backdrop to separate themselves from.
-	t.washA = rgba (0, 136, 255, 0.085);
-	t.washB = rgba (97, 85, 245, 0.070);
+	// panels have no backdrop to separate themselves from. Warm gold/beige
+	// instead of the kit's blue/indigo, to match the accent below.
+	t.washA = rgba (196, 154, 91, 0.10);
+	t.washB = rgba (214, 178, 128, 0.08);
 
 	t.label1 = rgba (0, 0, 0, 0.85);
 	t.label2 = rgba (0, 0, 0, 0.50);
@@ -155,12 +158,15 @@ inline Theme makeLightTheme ()
 
 	t.separator = rgba (60, 60, 67, 0.29);
 
-	t.accent = rgba (0, 136, 255, 1.0);
-	t.accentPressed = rgba (0, 116, 224, 1.0);
+	// Warm beige/tan accent -- sliders, switches and the gauge arc -- in
+	// place of the kit's cold #0088FF.
+	t.accent = rgba (181, 136, 74, 1.0);
+	t.accentPressed = rgba (153, 112, 58, 1.0);
 	t.accentGlyph = rgba (255, 255, 255, 1.0);
 
-	// Kit: fill rgba(255,255,255,0.7) over rgba(191,191,191,0.1).
-	t.glassFill = rgba (250, 250, 250, 0.72);
+	// Kit: fill rgba(255,255,255,0.7) over rgba(191,191,191,0.1). Tinted
+	// creme rather than neutral white to match the warmer surface.
+	t.glassFill = rgba (250, 247, 239, 0.72);
 	t.glassBand = rgba (39, 39, 39, 1.0);
 	t.glassTight = rgba (39, 39, 39, 1.0);
 	t.glassSpecular = rgba (255, 255, 255, 1.0);
@@ -172,13 +178,13 @@ inline Theme makeLightTheme ()
 	t.overGlassClicked = rgba (0, 0, 0, 0.20);
 	t.overGlassDisabled = rgba (0, 0, 0, 0.05);
 
-	t.chipFill = rgba (255, 255, 255, 0.95);
+	t.chipFill = rgba (250, 246, 236, 0.95);
 	t.chipRing = rgba (0, 0, 0, 0.06);
 	t.chipShadow = rgba (0, 0, 0, 1.0);
 	t.wellFill = rgba (0, 0, 0, 0.10);
 
-	t.focusRingOuter = rgba (0, 136, 255, 0.25);
-	t.focusRingInner = rgba (0, 136, 255, 0.15);
+	t.focusRingOuter = rgba (181, 136, 74, 0.25);
+	t.focusRingInner = rgba (181, 136, 74, 0.15);
 
 	return t;
 }
@@ -189,9 +195,11 @@ inline Theme makeDarkTheme ()
 	Theme t;
 	t.dark = true;
 
-	t.windowBg = rgba (30, 30, 30, 1.0);
-	t.washA = rgba (0, 145, 255, 0.16);
-	t.washB = rgba (109, 124, 255, 0.12);
+	// A warm near-black rather than the kit's neutral #1E1E1E, so the whole
+	// panel leans beige instead of cold grey. This is the default appearance.
+	t.windowBg = rgba (30, 28, 25, 1.0);
+	t.washA = rgba (214, 178, 128, 0.16);
+	t.washB = rgba (181, 140, 90, 0.12);
 
 	// Dark primary is solid white in 27, not 85% [kit].
 	t.label1 = rgba (255, 255, 255, 1.0);
@@ -209,11 +217,13 @@ inline Theme makeDarkTheme ()
 	// that actually reads, so dark uses that instead.
 	t.separator = rgba (255, 255, 255, 0.12);
 
-	t.accent = rgba (0, 145, 255, 1.0);
-	t.accentPressed = rgba (0, 125, 226, 1.0);
+	// Warm beige/tan accent -- sliders, switches and the gauge arc -- in
+	// place of the kit's cold #0091FF.
+	t.accent = rgba (214, 178, 128, 1.0);
+	t.accentPressed = rgba (190, 155, 108, 1.0);
 	t.accentGlyph = rgba (255, 255, 255, 1.0);
 
-	t.glassFill = rgba (26, 26, 26, 0.55);
+	t.glassFill = rgba (28, 26, 23, 0.55);
 	t.glassBand = rgba (52, 52, 52, 1.0);
 	t.glassTight = rgba (103, 103, 103, 1.0);
 	t.glassSpecular = rgba (255, 255, 255, 0.2);
@@ -225,13 +235,13 @@ inline Theme makeDarkTheme ()
 	t.overGlassClicked = rgba (255, 255, 255, 0.22);
 	t.overGlassDisabled = rgba (255, 255, 255, 0.05);
 
-	t.chipFill = rgba (110, 110, 112, 0.95);
+	t.chipFill = rgba (112, 106, 98, 0.95);
 	t.chipRing = rgba (255, 255, 255, 0.10);
 	t.chipShadow = rgba (0, 0, 0, 1.0);
 	t.wellFill = rgba (0, 0, 0, 0.30);
 
-	t.focusRingOuter = rgba (0, 145, 255, 0.25);
-	t.focusRingInner = rgba (0, 145, 255, 0.15);
+	t.focusRingOuter = rgba (214, 178, 128, 0.25);
+	t.focusRingInner = rgba (214, 178, 128, 0.15);
 
 	return t;
 }
@@ -257,6 +267,13 @@ struct Fonts
 	VSTGUI::SharedPointer<VSTGUI::CFontDesc> subhead;     // 11 regular
 	VSTGUI::SharedPointer<VSTGUI::CFontDesc> subheadEmph; // 11 emphasized
 	VSTGUI::SharedPointer<VSTGUI::CFontDesc> caption;     // 10 regular
+
+	/** The fancy cursive wordmark for "Glass76 Signature". A genuine script
+	    typeface, not an italic body face -- see macdraw.cpp for the
+	    substitute chain, since none of the licensed script faces (Segoe
+	    Script and the rest) can ship inside the plug-in bundle. */
+	VSTGUI::SharedPointer<VSTGUI::CFontDesc> signature;      // 17, model switch
+	VSTGUI::SharedPointer<VSTGUI::CFontDesc> signatureSmall; // 15, settings credits
 
 	/** What actually resolved, for the start-up check. A font that fails
 	    to load and silently falls back breaks every metric while nothing

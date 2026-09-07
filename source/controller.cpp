@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //------------------------------------------------------------------------
 
 #include "controller.h"
@@ -174,6 +174,16 @@ tresult PLUGIN_API Glass76Controller::initialize (FUnknown* context)
 	trim->setPrecision (1);
 	parameters.addParameter (trim);
 
+	//--- Model: Glass76 CLEAN vs Glass76 Signature -----------------------
+	// The glass slider at the top-left of the panel. CLEAN is transparent
+	// math with no hardware modeling; Signature is the CLA-76-calibrated
+	// character build. See params.h for exactly what each does.
+	static const TChar* const modelStrings[kModelStepCount] = {
+		STR16 ("Glass76 CLEAN"), STR16 ("Glass76 Signature")
+	};
+	addStringList (parameters, STR16 ("Model"), kParamModelId, nullptr,
+	               modelStrings, kModelStepCount, kModelDefaultStep);
+
 	//--- Meter feedback, written by the processor ------------------------
 	// Read-only so no host offers them for automation, but still real
 	// parameters, which is what lets the processor push values to the UI
@@ -186,10 +196,12 @@ tresult PLUGIN_API Glass76Controller::initialize (FUnknown* context)
 		parameters.addParameter (p);
 	};
 	addMeter (STR16 ("Meter GR"), kParamMeterGrId, STR16 ("dB"), 0.0, kMeterGrMaxDb);
-	addMeter (STR16 ("Meter In"), kParamMeterInId, STR16 ("dB"),
+	addMeter (STR16 ("Meter In"), kParamMeterInId, STR16 ("VU"),
 	          kMeterLevelMinDb, kMeterLevelMaxDb);
-	addMeter (STR16 ("Meter Out"), kParamMeterOutId, STR16 ("dB"),
+	addMeter (STR16 ("Meter Out"), kParamMeterOutId, STR16 ("VU"),
 	          kMeterLevelMinDb, kMeterLevelMaxDb);
+	addMeter (STR16 ("Auto Makeup Gain"), kParamMeterMakeupId, STR16 ("dB"),
+	          0.0, kMeterGrMaxDb);
 
 	//--- Bypass ---------------------------------------------------------
 	// kIsBypass is what lets the host do a delay-compensated bypass. Exactly
@@ -228,6 +240,7 @@ tresult PLUGIN_API Glass76Controller::setComponentState (IBStream* state)
 
 	double inputNorm = 0.0, outputNorm = 0.0, attackNorm = 0.0, releaseNorm = 0.0;
 	double ratioNorm = 0.0, meterNorm = 0.0, analogNorm = 0.0, mixNorm = 1.0, trimNorm = 0.5;
+	double modelNorm = stepToNormalized (kModelDefaultStep, kModelStepCount);
 	bool autoMakeup = false, compOff = false, bypass = false;
 
 	if (!streamer.readDouble (inputNorm))   return kResultFalse;
@@ -239,6 +252,12 @@ tresult PLUGIN_API Glass76Controller::setComponentState (IBStream* state)
 	if (!streamer.readDouble (analogNorm))  return kResultFalse;
 	if (!streamer.readDouble (mixNorm))     return kResultFalse;
 	if (!streamer.readDouble (trimNorm))    return kResultFalse;
+	// v2: model, written right after trim. Version-1 streams stop here and
+	// default to Signature, which is what they already sounded like.
+	if (version >= 2)
+	{
+		if (!streamer.readDouble (modelNorm)) return kResultFalse;
+	}
 	if (!streamer.readBool (autoMakeup))    return kResultFalse;
 	if (!streamer.readBool (compOff))       return kResultFalse;
 	if (!streamer.readBool (bypass))        return kResultFalse;
@@ -252,6 +271,7 @@ tresult PLUGIN_API Glass76Controller::setComponentState (IBStream* state)
 	setParamNormalized (kParamAnalogId, analogNorm);
 	setParamNormalized (kParamMixId, mixNorm);
 	setParamNormalized (kParamTrimId, trimNorm);
+	setParamNormalized (kParamModelId, modelNorm);
 	setParamNormalized (kParamAutoMakeupId, autoMakeup ? 1.0 : 0.0);
 	setParamNormalized (kParamCompOffId, compOff ? 1.0 : 0.0);
 	setParamNormalized (kParamBypassId, bypass ? 1.0 : 0.0);
@@ -289,6 +309,9 @@ tresult PLUGIN_API Glass76Controller::setParamNormalized (ParamID tag, ParamValu
 		case kParamAnalogId:
 			mRoot->setStep (tag, normalizedToStep (value, kAnalogStepCount));
 			break;
+		case kParamModelId:
+			mRoot->setStep (tag, normalizedToStep (value, kModelStepCount));
+			break;
 
 		case kParamAutoMakeupId:
 		case kParamCompOffId:
@@ -309,6 +332,9 @@ tresult PLUGIN_API Glass76Controller::setParamNormalized (ParamID tag, ParamValu
 			break;
 		case kParamMeterOutId:
 			mRoot->setMeterOut (normalizedToLevelDb (value));
+			break;
+		case kParamMeterMakeupId:
+			mRoot->setMeterMakeup (normalizedToGrDb (value));
 			break;
 
 		default:
@@ -333,6 +359,7 @@ void Glass76Controller::changeStep (ParamID id, int step)
 		case kParamRatioId:   count = kRatioStepCount;  break;
 		case kParamMeterId:   count = kMeterStepCount;  break;
 		case kParamAnalogId:  count = kAnalogStepCount; break;
+		case kParamModelId:   count = kModelStepCount;  break;
 		default: return;
 	}
 	changeContinuous (id, stepToNormalized (step, count));
@@ -354,8 +381,10 @@ void Glass76Controller::changeContinuous (ParamID id, double normalized)
 }
 
 //------------------------------------------------------------------------
-// Controller-only state: the light/dark preference. Versioned separately
-// from the processor state so the two can evolve independently.
+// Controller-only state: the light/dark preference and the background
+// image path. Versioned separately from the processor state so the two can
+// evolve independently. The background image path was added after ship;
+// a stream that ends after appearance (an older save) just leaves it empty.
 //------------------------------------------------------------------------
 tresult PLUGIN_API Glass76Controller::setState (IBStream* state)
 {
@@ -370,6 +399,19 @@ tresult PLUGIN_API Glass76Controller::setState (IBStream* state)
 		if (mRoot)
 			mRoot->setAppearance (mAppearance);
 	}
+
+	int32 pathLen = 0;
+	if (streamer.readInt32 (pathLen) && pathLen >= 0 && pathLen < 4096)
+	{
+		std::string path (static_cast<size_t> (pathLen), '\0');
+		if (pathLen == 0 || streamer.readRaw (path.data (), pathLen) == pathLen)
+		{
+			mBackgroundImagePath = path;
+			if (mRoot)
+				mRoot->setBackgroundImagePath (mBackgroundImagePath);
+		}
+	}
+
 	return kResultTrue;
 }
 
@@ -381,6 +423,10 @@ tresult PLUGIN_API Glass76Controller::getState (IBStream* state)
 
 	IBStreamer streamer (state, kLittleEndian);
 	streamer.writeInt32 (mAppearance);
+	streamer.writeInt32 (static_cast<int32> (mBackgroundImagePath.size ()));
+	if (!mBackgroundImagePath.empty ())
+		streamer.writeRaw (mBackgroundImagePath.data (),
+		                   static_cast<int32> (mBackgroundImagePath.size ()));
 	return kResultTrue;
 }
 
@@ -409,6 +455,8 @@ VSTGUI::CView* Glass76Controller::createCustomView (VSTGUI::UTF8StringPtr name,
 		                                               RootView::kPanelHeight));
 		mRoot = root;
 		root->setAppearance (mAppearance);
+		if (!mBackgroundImagePath.empty ())
+			root->setBackgroundImagePath (mBackgroundImagePath);
 
 		// Seed the view with the values the host already has, so it opens
 		// showing the real state rather than the defaults.

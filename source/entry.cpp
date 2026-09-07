@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //------------------------------------------------------------------------
 
 #include "processor.h"
@@ -17,7 +17,7 @@ using namespace Jaxson;
 //------------------------------------------------------------------------
 //  VST 3 Plug-in entry point
 //------------------------------------------------------------------------
-BEGIN_FACTORY_DEF ("Jaxson",
+BEGIN_FACTORY_DEF ("jxxnmade",
                    "https://example.com",
                    "mailto:info@example.com")
 

@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //
 // Drawing primitives for the macOS 27 look: continuous (squircle) corners,
 // the Liquid Glass edge stack, layered soft shadows, and text helpers.

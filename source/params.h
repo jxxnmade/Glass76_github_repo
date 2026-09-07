@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //
 // Glass76 -- FET compressor. Shared parameter contract between the
 // processor (audio thread) and the controller (UI thread). Both sides read
@@ -31,13 +31,15 @@ enum Glass76ParamID : Steinberg::Vst::ParamID
 	kParamAnalogId     = 8,   // 50 Hz / 60 Hz / Off
 	kParamMixId        = 9,   // 0..100 %
 	kParamTrimId       = 10,  // -18..+18 dB
+	kParamModelId      = 11,  // 0 = Glass76 CLEAN, 1 = Glass76 Signature
 
 	// Read-only meter feedback, pushed by the processor through
 	// data.outputParameterChanges so the editor can draw a live needle
 	// without ever touching processor memory.
-	kParamMeterGrId    = 100,
-	kParamMeterInId    = 101,
-	kParamMeterOutId   = 102,
+	kParamMeterGrId     = 100,
+	kParamMeterInId     = 101,
+	kParamMeterOutId    = 102,
+	kParamMeterMakeupId = 103,   // dB auto make-up is currently adding
 
 	// Kept far away so normal parameters can keep growing.
 	kParamBypassId     = 1000
@@ -79,6 +81,16 @@ static constexpr int kAnalogStepCount = 3;
 enum AnalogMode { kAnalog50 = 0, kAnalog60 = 1, kAnalogOff = 2 };
 static constexpr int kAnalogDefaultStep = kAnalogOff;
 
+/** Voicing model. CLEAN is the mathematically transparent compressor this
+    plug-in started as: threshold, ratio, knee, one release time, nothing
+    else. Signature is the CLA-76-calibrated build everything else in this
+    file documents -- the hardware drive, the dual release, the FET
+    saturation, the all-buttons-in quirks, the mains hum. Selecting CLEAN
+    switches all of that off in the processor; it does not attenuate it. */
+static constexpr int kModelStepCount = 2;
+enum ModelMode { kModelClean = 0, kModelSignature = 1 };
+static constexpr int kModelDefaultStep = kModelSignature;   // preserve existing behaviour
+
 //------------------------------------------------------------------------
 // Continuous ranges.
 //------------------------------------------------------------------------
@@ -93,19 +105,45 @@ static constexpr double kTrimDefaultDb = 0.0;
 //------------------------------------------------------------------------
 // Fixed internal gain staging. The front-panel controls are attenuators,
 // exactly like the hardware: the amplifier gain that follows them is fixed
-// and lives here. With both attenuators at their -24 dB detent the plug-in
-// is unity gain, and a -18 dBFS signal sits right on the threshold.
+// and lives here.
+//
+// These two numbers are calibrated against the Waves CLA-76, from a render
+// of real material made inside FL Studio (input -30, output -18, 4:1,
+// attack 3, release 5). Measuring the short-time gain of both plug-ins
+// against the untouched original gave:
+//
+//   - at levels below the knee, where gain reduction is zero, the CLA-76
+//     applied +8.14 dB where Glass76 applied 0.00 dB;
+//   - above the knee the two agreed to within 0.35 dB.
+//
+// Both can only be true at once if the CLA-76 drives its detector harder
+// and makes up less. Solving the pair (extra static gain = D + M, extra
+// reduction at 4:1 = 0.75 D, net difference when loud = 0) gives
+// D = +10.85 dB of input drive and M = -2.71 dB of output make-up.
+//
+// The earlier symmetric 24/24 was a plausible guess, not a measurement,
+// and it under-compressed by roughly 8 dB at any given setting.
 //------------------------------------------------------------------------
-static constexpr double kInputMakeupDb = 24.0;
-static constexpr double kOutputMakeupDb = 24.0;
+static constexpr double kInputMakeupDb = 34.85;
+static constexpr double kOutputMakeupDb = 21.29;
 static constexpr double kThresholdDb = -18.0;
 
 //------------------------------------------------------------------------
 // Meter encoding. Normalized 0..1 on the wire, plain units at both ends.
 //------------------------------------------------------------------------
 static constexpr double kMeterGrMaxDb = 30.0;   // 0..30 dB of reduction
-static constexpr double kMeterLevelMinDb = -60.0;
-static constexpr double kMeterLevelMaxDb = 6.0;
+
+// IN and OUT are a VU meter, not a peak meter: RMS averaged over 300 ms,
+// on the hardware's -20..+3 VU scale. 0 VU = -18 dBFS RMS, which is the
+// digital reference Waves calibrates the CLA-76 to. Reading peak dBFS
+// against a VU needle compares two different quantities and the numbers
+// will never agree.
+static constexpr double kVuReferenceDbFs = -18.0;
+static constexpr double kMeterLevelMinDb = -20.0;   // VU
+static constexpr double kMeterLevelMaxDb = 3.0;     // VU
+
+/** RMS level in dBFS -> VU. */
+inline double dbFsToVu (double dbFs) { return dbFs - kVuReferenceDbFs; }
 
 //------------------------------------------------------------------------
 // Helpers. All of these are pure and safe to call from either thread.
@@ -253,8 +291,13 @@ inline double normalizedToLevelDb (double n)
 //------------------------------------------------------------------------
 // State format version. Bump it whenever the byte layout changes, and
 // handle the older versions in setState so old projects still open.
+//
+// v2 adds the model (CLEAN / Signature) double, written right after trim
+// and before the three bools. Version-1 streams end where they always did;
+// setState only reads it when version >= 2 and otherwise defaults to
+// Signature, which is what every version-1 project already sounds like.
 //------------------------------------------------------------------------
-static constexpr Steinberg::int32 kGlass76StateVersion = 1;
+static constexpr Steinberg::int32 kGlass76StateVersion = 2;
 
 //------------------------------------------------------------------------
 } // namespace Jaxson

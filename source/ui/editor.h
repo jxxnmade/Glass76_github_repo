@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //
 // RootView -- the entire Glass76 editor surface, in one CView.
 //
@@ -58,7 +58,13 @@ public:
 	void setMeterGr (double db);
 	void setMeterIn (double db);
 	void setMeterOut (double db);
+	void setMeterMakeup (double db);
 	void setAppearance (int dark);
+
+	/** Loads (or clears, if path is empty) the settings-panel background
+	    image. Safe to call before the view has a frame -- the load just
+	    fails silently and is retried the next time this is called. */
+	void setBackgroundImagePath (const std::string& path);
 
 	//--- CView ----------------------------------------------------------
 	void draw (VSTGUI::CDrawContext* context) override;
@@ -143,8 +149,16 @@ private:
 	void drawSwitch (VSTGUI::CDrawContext* context, const Switch& sw) const;
 	void drawPill (VSTGUI::CDrawContext* context, const Pill& pill) const;
 	void drawAppearanceButton (VSTGUI::CDrawContext* context) const;
+	void drawSettingsButton (VSTGUI::CDrawContext* context) const;
+	void drawSettingsOverlay (VSTGUI::CDrawContext* context) const;
 	void drawGauge (VSTGUI::CDrawContext* context) const;
 	void drawValueColumn (VSTGUI::CDrawContext* context) const;
+
+	//--- settings panel ---------------------------------------------------
+	void openSettings ();
+	void closeSettings ();
+	void chooseBackgroundImage ();
+	void clearBackgroundImage ();
 
 	//--- value formatting ------------------------------------------------
 	std::string gainStepText (Steinberg::Vst::ParamID id) const;
@@ -176,7 +190,19 @@ private:
 	VSTGUI::CRect mTitleRect;
 	VSTGUI::CRect mSubtitleRect;
 	VSTGUI::CRect mAppearanceRect;
+	VSTGUI::CRect mSettingsButtonRect;
 	VSTGUI::CRect mGaugeRect;
+
+	//--- settings overlay ---------------------------------------------------
+	bool mSettingsOpen {false};
+	VSTGUI::CRect mSettingsCardRect;
+	VSTGUI::CRect mSettingsChooseRect;
+	VSTGUI::CRect mSettingsClearRect;
+	VSTGUI::CRect mSettingsCloseRect;
+	std::string mBackgroundImagePath;
+	VSTGUI::SharedPointer<VSTGUI::CBitmap> mBackgroundImage;
+	int mChromeBgToken {0};       // bumped whenever the background image changes
+	int mChromeBgTokenCached {-1};
 
 	// Value readout column, one per row that has one.
 	VSTGUI::CRect mValueInput, mValueOutput;
@@ -191,6 +217,8 @@ private:
 	double mMeterOutDb {-60.0};
 	double mGaugeShown {0.0};    // smoothed 0..1, what is actually drawn
 	double mGaugePeak {0.0};
+	double mMakeupDb {0.0};      // what auto make-up is currently adding
+	bool mAutoMakeupOn {false};
 
 	VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> mTimer;
 	VSTGUI::SharedPointer<VSTGUI::CBitmap> mChrome;

@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //------------------------------------------------------------------------
 
 #pragma once
@@ -16,6 +16,6 @@
 #else
 #define stringFileDescription	"Glass76 VST3"
 #endif
-#define stringCompanyName		"Jaxson\0"
-#define stringLegalCopyright	"Copyright (c) 2026 Jaxson"
+#define stringCompanyName		"jxxnmade\0"
+#define stringLegalCopyright	"Copyright (c) 2026 jxxnmade"
 #define stringLegalTrademarks	"VST is a trademark of Steinberg Media Technologies GmbH"

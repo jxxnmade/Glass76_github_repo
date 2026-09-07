@@ -104,7 +104,7 @@ project(Glass76
     # Your plug-in version. Change it here only; source/version.h picks it up
     # through the generated projectversion.h, and installer/Glass76.nsi reads
     # it back out of the built binary.
-    VERSION 1.0.0.0
+    VERSION 1.2.0.0
     DESCRIPTION "Glass76 VST 3 Plug-in"
 )
 

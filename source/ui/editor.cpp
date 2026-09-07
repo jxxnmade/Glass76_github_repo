@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //
 // RootView -- see editor.h for the design notes.
 //
@@ -20,6 +20,8 @@
 #include "vstgui/lib/coffscreencontext.h"
 #include "vstgui/lib/cgraphicspath.h"
 #include "vstgui/lib/cframe.h"
+#include "vstgui/lib/cfileselector.h"
+#include "vstgui/lib/platform/platformfactory.h"
 
 #include <algorithm>
 #include <cmath>
@@ -143,6 +145,16 @@ void RootView::buildLayout ()
 	mPills.push_back ({R (kPanelWidth - 20 - 28 - 8 - 100, 12,
 	                      kPanelWidth - 20 - 28 - 8, 40),
 	                   kParamCompOffId, "Comp Off", false});
+	mSettingsButtonRect = R (kPanelWidth - 20 - 28 - 8 - 100 - 8 - 28, 12,
+	                         kPanelWidth - 20 - 28 - 8 - 100 - 8, 40);
+
+	// Toolbar leading edge: the glass model slider. It doubles as the
+	// wordmark -- "Glass76 CLEAN" or "Glass76 Signature" -- and as the
+	// control that switches the processor between the two. A Segmented
+	// like any other, drawn with its own fonts (see drawSegmented).
+	mSegments.push_back ({R (kInset, 12, kInset + 368, 40), kParamModelId,
+	                      {"Glass76 CLEAN", "Glass76 Signature"},
+	                      kModelDefaultStep, true});
 
 	//--- cards --------------------------------------------------------
 	mCards.push_back ({R (kColLeftX, kCardGainT, kColLeftR, kCardGainB), "Gain"});
@@ -273,6 +285,21 @@ void RootView::buildLayout ()
 		                      kParamAnalogId, {"50 Hz", "60 Hz", "Off"},
 		                      kAnalogDefaultStep, false});
 	}
+
+	//--- settings overlay -----------------------------------------------
+	{
+		constexpr CCoord cardW = 380, cardH = 280;
+		const CCoord cardL = kPanelWidth * 0.5 - cardW * 0.5;
+		const CCoord cardT = kPanelHeight * 0.5 - cardH * 0.5;
+		mSettingsCardRect = R (cardL, cardT, cardL + cardW, cardT + cardH);
+
+		mSettingsChooseRect = R (cardL + kCardPad, cardT + 78,
+		                         cardL + kCardPad + 168, cardT + 78 + 32);
+		mSettingsClearRect = R (cardL + kCardPad + 168 + 10, cardT + 78,
+		                        cardL + kCardPad + 168 + 10 + 84, cardT + 78 + 32);
+		mSettingsCloseRect = R (cardL + cardW - kCardPad - 90, cardT + cardH - 16 - 32,
+		                        cardL + cardW - kCardPad, cardT + cardH - 16);
+	}
 }
 
 //========================================================================
@@ -344,6 +371,8 @@ void RootView::setToggle (ParamID id, bool on)
 			if (sw.on != on)
 			{
 				sw.on = on;
+				if (id == kParamAutoMakeupId)
+					mAutoMakeupOn = on;
 				invalid ();
 			}
 			return;
@@ -386,6 +415,16 @@ void RootView::setMeterIn (double db) { mMeterInDb = db; }
 void RootView::setMeterOut (double db) { mMeterOutDb = db; }
 
 //------------------------------------------------------------------------
+void RootView::setMeterMakeup (double db)
+{
+	if (std::fabs (mMakeupDb - db) < 0.05)
+		return;
+	mMakeupDb = db;
+	if (mAutoMakeupOn)
+		invalidRect (mValueOutput);
+}
+
+//------------------------------------------------------------------------
 void RootView::setAppearance (int dark)
 {
 	const int d = dark ? 1 : 0;
@@ -394,6 +433,27 @@ void RootView::setAppearance (int dark)
 	mDark = d;
 	invalidateChrome ();
 	invalid ();
+}
+
+//------------------------------------------------------------------------
+void RootView::setBackgroundImagePath (const std::string& path)
+{
+	mBackgroundImagePath = path;
+	mBackgroundImage = nullptr;
+	if (!path.empty ())
+	{
+		if (auto platformBmp = VSTGUI::getPlatformFactory ().createBitmapFromPath (path.c_str ()))
+			mBackgroundImage = VSTGUI::owned (new CBitmap (platformBmp));
+	}
+
+	mChromeBgToken++;
+	invalidateChrome ();
+	invalid ();
+
+	// Persisted separately in the controller's own state; see setState /
+	// getState there and Glass76Controller::setBackgroundImagePath.
+	if (mController)
+		mController->setBackgroundImagePath (mBackgroundImagePath);
 }
 
 //========================================================================
@@ -479,7 +539,8 @@ void RootView::invalidateChrome ()
 void RootView::ensureChrome (CDrawContext* context)
 {
 	const double scale = getFrame () ? getFrame ()->getScaleFactor () : 1.0;
-	if (mChrome && mChromeDark == mDark && std::fabs (mChromeScale - scale) < 1e-6)
+	if (mChrome && mChromeDark == mDark && mChromeBgTokenCached == mChromeBgToken &&
+	    std::fabs (mChromeScale - scale) < 1e-6)
 		return;
 
 	const CRect view (getViewSize ());
@@ -507,6 +568,7 @@ void RootView::ensureChrome (CDrawContext* context)
 	mChrome = offscreen->getBitmap ();
 	mChromeScale = scale;
 	mChromeDark = mDark;
+	mChromeBgTokenCached = mChromeBgToken;
 
 	if (!mChrome)
 		drawChrome (context);
@@ -523,11 +585,46 @@ void RootView::drawChrome (CDrawContext* context)
 	context->setFillColor (t.windowBg);
 	context->drawRect (view, kDrawFilled);
 
-	//--- wallpaper stand-in -----------------------------------------
-	// A plug-in window has no desktop behind it, so glass has nothing to
-	// sample. Two very faint radial washes give the glass something to
-	// separate itself from; without them the panels vanish into the white.
+	if (mBackgroundImage && mBackgroundImage->isLoaded ())
 	{
+		//--- user background image --------------------------------------
+		// This is the actual wallpaper the wash gradients below normally
+		// stand in for, so it replaces them outright: the glass panels
+		// sample it directly, the way Liquid Glass samples a real desktop.
+		const CCoord bw = mBackgroundImage->getWidth ();
+		const CCoord bh = mBackgroundImage->getHeight ();
+		if (bw > 0 && bh > 0)
+		{
+			const double srcAspect = bw / bh;
+			const double dstAspect = view.getWidth () / view.getHeight ();
+			CRect src;
+			if (srcAspect > dstAspect)
+			{
+				const CCoord cw = bh * dstAspect;
+				const CCoord x = (bw - cw) * 0.5;
+				src = CRect (x, 0, x + cw, bh);
+			}
+			else
+			{
+				const CCoord ch = bw / dstAspect;
+				const CCoord y = (bh - ch) * 0.5;
+				src = CRect (0, y, bw, y + ch);
+			}
+			context->fillRectWithBitmap (mBackgroundImage, src, view, 1.0f);
+		}
+
+		// A scrim in the window colour so text and glass edges keep reading
+		// correctly over arbitrary artwork, the same job the washes do below.
+		context->setFillColor (mac::withAlpha (t.windowBg, t.dark ? 0.55 : 0.45));
+		context->drawRect (view, kDrawFilled);
+	}
+	else
+	{
+		//--- wallpaper stand-in -----------------------------------------
+		// A plug-in window has no desktop behind it, so glass has nothing to
+		// sample. Two very faint radial washes give the glass something to
+		// separate itself from; without them the panels vanish into the
+		// background. Only used when there is no real wallpaper to sample.
 		auto path = VSTGUI::owned (context->createGraphicsPath ());
 		if (path)
 		{
@@ -602,8 +699,10 @@ void RootView::draw (CDrawContext* context)
 		drawPill (context, pill);
 
 	drawAppearanceButton (context);
+	drawSettingsButton (context);
 	drawValueColumn (context);
 	drawGauge (context);
+	drawSettingsOverlay (context);
 
 	setDirty (false);
 }
@@ -619,11 +718,26 @@ void RootView::drawSegmented (CDrawContext* context, const Segmented& seg) const
 	const CCoord h = seg.r.getHeight ();
 	const CCoord radius = seg.capsule ? mac::capsuleFor (h) : mac::radiusFor (h);
 
-	mac::fillSquircle (context, seg.r, radius, t.fill2);
+	// Analog only means anything under Signature -- CLEAN has no mains
+	// emulation to switch, so the control reads as disabled (macOS 27's
+	// third state, just reduced opacity) instead of silently doing nothing.
+	const bool disabled = (seg.id == kParamAnalogId) &&
+	                      (stepOf (kParamModelId) != kModelSignature);
+	const double dim = disabled ? 0.4 : 1.0;
+	auto dimmed = [dim] (const CColor& c) {
+		return mac::withAlpha (c, (c.alpha / 255.0) * dim);
+	};
+
+	mac::fillSquircle (context, seg.r, radius, dimmed (t.fill2));
 
 	const int n = static_cast<int> (seg.labels.size ());
 	if (n <= 0)
 		return;
+
+	// The model switch is a wordmark as much as a control: "Glass76 CLEAN"
+	// in the same bold text as the rest of the UI, "Glass76 Signature" in a
+	// script face. Every other segmented control just uses body text.
+	const bool isModelSwitch = (seg.id == kParamModelId);
 
 	const CCoord segW = seg.r.getWidth () / static_cast<CCoord> (n);
 	const auto& fonts = mac::Fonts::get ();
@@ -638,9 +752,10 @@ void RootView::drawSegmented (CDrawContext* context, const Segmented& seg) const
 			CRect chip (cell);
 			chip.inset (2.0, 2.0);
 			const CCoord chipRadius = mac::concentricRadius (radius, 2.0, chip.getHeight ());
-			chipShadow (context, chip, chipRadius, t.chipShadow);
-			mac::fillSquircle (context, chip, chipRadius, t.chipFill);
-			mac::strokeSquircle (context, chip, chipRadius, t.chipRing, 1.0);
+			if (!disabled)
+				chipShadow (context, chip, chipRadius, t.chipShadow);
+			mac::fillSquircle (context, chip, chipRadius, dimmed (t.chipFill));
+			mac::strokeSquircle (context, chip, chipRadius, dimmed (t.chipRing), 1.0);
 		}
 		else if (i > 0)
 		{
@@ -649,13 +764,15 @@ void RootView::drawSegmented (CDrawContext* context, const Segmented& seg) const
 			if (i != seg.step + 1)
 			{
 				CRect divider (cell.left, cell.top + 6, cell.left + 1, cell.bottom - 6);
-				context->setFillColor (t.label4);
+				context->setFillColor (dimmed (t.label4));
 				context->drawRect (divider, kDrawFilled);
 			}
 		}
 
+		const CFontRef font = isModelSwitch ? (i == 1 ? fonts.signature : fonts.headline)
+		                                    : fonts.body;
 		mac::drawText (context, seg.labels[i].c_str (), cell, kCenterText,
-		               fonts.body, i == seg.step ? t.label1 : t.label2);
+		               font, dimmed (i == seg.step ? t.label1 : t.label2));
 	}
 }
 
@@ -799,6 +916,123 @@ void RootView::drawAppearanceButton (CDrawContext* context) const
 }
 
 //------------------------------------------------------------------------
+// Settings button. Same borderless, flat-glyph treatment as the appearance
+// toggle: three slider tracks with knobs at different positions, drawn
+// rather than imported for the same licensing reason SF Symbols are out.
+//------------------------------------------------------------------------
+void RootView::drawSettingsButton (CDrawContext* context) const
+{
+	const mac::Theme& t = theme ();
+	const CColor c = mac::withAlpha (t.label1, 0.70);
+
+	CRect r (mSettingsButtonRect);
+	r.inset (5.0, 5.0);
+
+	context->setFrameColor (c);
+	context->setFillColor (c);
+	context->setLineWidth (1.5);
+
+	static constexpr double kKnobFrac[3] = {0.30, 0.65, 0.45};
+	const CCoord rowH = r.getHeight () / 3.0;
+
+	for (int i = 0; i < 3; i++)
+	{
+		const CCoord y = r.top + rowH * (i + 0.5);
+		context->drawLine (CPoint (r.left, y), CPoint (r.right, y));
+
+		const CCoord kx = r.left + r.getWidth () * kKnobFrac[i];
+		CRect knob (kx - 2.0, y - 2.0, kx + 2.0, y + 2.0);
+		auto path = VSTGUI::owned (context->createGraphicsPath ());
+		if (path)
+		{
+			path->addEllipse (knob);
+			context->drawGraphicsPath (path, CDrawContext::kPathFilled);
+		}
+	}
+}
+
+//------------------------------------------------------------------------
+// The settings panel. A scrim over the whole editor plus one glass card,
+// drawn live every frame rather than through the cached chrome bitmap --
+// it only exists while open, so there is nothing worth caching.
+//------------------------------------------------------------------------
+void RootView::drawSettingsOverlay (CDrawContext* context) const
+{
+	if (!mSettingsOpen)
+		return;
+
+	const mac::Theme& t = theme ();
+	const auto& fonts = mac::Fonts::get ();
+	const CRect view (getViewSize ());
+
+	context->setFillColor (mac::rgba (0, 0, 0, t.dark ? 0.55 : 0.35));
+	context->drawRect (view, kDrawFilled);
+
+	mac::drawGlassPanel (context, mSettingsCardRect, kCardRadius, t, true);
+
+	CRect title (mSettingsCardRect);
+	title.left += kCardPad;
+	title.right -= kCardPad;
+	title.top += 18;
+	title.bottom = title.top + 24;
+	mac::drawText (context, "Settings", title, kLeftText, fonts.title3, t.label1);
+
+	CRect sub (title);
+	sub.top = title.bottom;
+	sub.bottom = sub.top + 18;
+	mac::drawText (context, "Background image", sub, kLeftText, fonts.subhead, t.label2);
+
+	// Choose button.
+	{
+		const CCoord radius = mac::capsuleFor (mSettingsChooseRect.getHeight ());
+		mac::fillSquircle (context, mSettingsChooseRect, radius, t.fill2);
+		mac::strokeSquircle (context, mSettingsChooseRect, radius, t.chipRing, 1.0);
+		mac::drawText (context, "Choose Image...", mSettingsChooseRect, kCenterText,
+		              fonts.body, t.label1);
+	}
+
+	// Clear button -- reads as disabled when there is nothing to clear.
+	{
+		const CCoord radius = mac::capsuleFor (mSettingsClearRect.getHeight ());
+		const bool hasImage = (mBackgroundImage != nullptr);
+		mac::strokeSquircle (context, mSettingsClearRect, radius, t.chipRing, 1.0);
+		mac::drawText (context, "Clear", mSettingsClearRect, kCenterText,
+		              fonts.body, hasImage ? t.label1 : t.label3);
+	}
+
+	CRect pathRect (mSettingsCardRect);
+	pathRect.left += kCardPad;
+	pathRect.right -= kCardPad;
+	pathRect.top = mSettingsChooseRect.bottom + 12;
+	pathRect.bottom = pathRect.top + 16;
+	const std::string pathLabel =
+	    mBackgroundImagePath.empty () ? "No image selected" : mBackgroundImagePath;
+	mac::drawText (context, pathLabel.c_str (), pathRect, kLeftText, fonts.caption, t.label3);
+
+	CRect sep (mSettingsCardRect.left + kCardPad, pathRect.bottom + 16,
+	          mSettingsCardRect.right - kCardPad, pathRect.bottom + 17);
+	context->setFillColor (t.separator);
+	context->drawRect (sep, kDrawFilled);
+
+	// Credits: a plain label, then the name signed in the same script face
+	// as the Signature wordmark.
+	CRect creditsLabel (sep.left, sep.bottom + 10, sep.left + 60, sep.bottom + 32);
+	mac::drawText (context, "Credits", creditsLabel, kLeftText, fonts.subhead, t.label2);
+
+	CRect creditsName (creditsLabel.right + 6, sep.bottom + 2,
+	                   mSettingsCardRect.right - kCardPad, sep.bottom + 36);
+	mac::drawText (context, "jxxnmade", creditsName, kLeftText, fonts.signatureSmall, t.label1);
+
+	// Done.
+	{
+		const CCoord radius = mac::capsuleFor (mSettingsCloseRect.getHeight ());
+		mac::fillSquircle (context, mSettingsCloseRect, radius, t.accent);
+		mac::drawText (context, "Done", mSettingsCloseRect, kCenterText,
+		              fonts.body, t.accentGlyph);
+	}
+}
+
+//------------------------------------------------------------------------
 void RootView::drawValueColumn (CDrawContext* context) const
 {
 	const mac::Theme& t = theme ();
@@ -811,6 +1045,19 @@ void RootView::drawValueColumn (CDrawContext* context) const
 
 	value (mValueInput, gainStepText (kParamInputId));
 	value (mValueOutput, gainStepText (kParamOutputId));
+
+	// Auto make-up applies its gain inside the processor rather than moving
+	// the Output control -- driving the parameter would overwrite the
+	// setting the user dialled in and write automation. Showing the live
+	// amount underneath keeps it visible without touching their value.
+	if (mAutoMakeupOn)
+	{
+		CRect r (mValueOutput);
+		r.top = r.bottom - 2;
+		r.bottom = r.top + 14;
+		const std::string s = (mMakeupDb >= 0.05) ? fmt ("auto +%.1f", mMakeupDb) : "auto";
+		mac::drawText (context, s.c_str (), r, kRightText, fonts.caption, t.accent);
+	}
 	value (mValueAttack, attackText ());
 	value (mValueRelease, releaseText ());
 	value (mValueRatio, ratioText ());
@@ -907,7 +1154,7 @@ void RootView::drawGauge (CDrawContext* context) const
 				label = (i == 0) ? "0" : fmt ("%s%d", kMinus,
 				                              static_cast<int> (kMeterGrMaxDb * f + 0.5));
 			else
-				label = fmt ("%d", static_cast<int> (std::lround (normalizedToLevelDb (f))));
+				label = fmt ("%+d", static_cast<int> (std::lround (normalizedToLevelDb (f))));
 			if (!label.empty () && label[0] == '-')
 				label = std::string (kMinus) + label.substr (1);
 
@@ -924,8 +1171,8 @@ void RootView::drawGauge (CDrawContext* context) const
 		switch (mode)
 		{
 			case kMeterGR: db = mMeterGrDb; unit = "dB GR"; break;
-			case kMeterIn: db = mMeterInDb; unit = "dBFS in"; break;
-			default:       db = mMeterOutDb; unit = "dBFS out"; break;
+			case kMeterIn: db = mMeterInDb; unit = "VU in"; break;
+			default:       db = mMeterOutDb; unit = "VU out"; break;
 		}
 
 		std::string text;
@@ -934,7 +1181,7 @@ void RootView::drawGauge (CDrawContext* context) const
 		else if (db <= kMeterLevelMinDb + 0.1)
 			text = std::string (kMinus) + kInfinity;
 		else
-			text = (db < 0.0) ? fmt ("%s%.1f", kMinus, -db) : fmt ("%.1f", db);
+			text = (db < 0.0) ? fmt ("%s%.1f", kMinus, -db) : fmt ("+%.1f", db);
 
 		CRect valueRect (centre.x - 78, centre.y - 20, centre.x + 78, centre.y + 8);
 		mac::drawText (context, text.c_str (), valueRect, kCenterText, fonts.largeTitle, t.label1);
@@ -1029,6 +1276,34 @@ CMouseEventResult RootView::onMouseDown (CPoint& where, const CButtonState& butt
 	if (!buttons.isLeftButton () || !mController)
 		return kMouseEventNotHandled;
 
+	if (mSettingsOpen)
+	{
+		if (hit (mSettingsCloseRect, where))
+		{
+			closeSettings ();
+			return kMouseEventHandled;
+		}
+		if (hit (mSettingsChooseRect, where))
+		{
+			chooseBackgroundImage ();
+			return kMouseEventHandled;
+		}
+		if (hit (mSettingsClearRect, where) && mBackgroundImage)
+		{
+			clearBackgroundImage ();
+			return kMouseEventHandled;
+		}
+		if (!hit (mSettingsCardRect, where))
+			closeSettings ();   // click on the scrim dismisses the panel
+		return kMouseEventHandled;   // swallow everything else while open
+	}
+
+	if (hit (mSettingsButtonRect, where))
+	{
+		openSettings ();
+		return kMouseEventHandled;
+	}
+
 	if (hit (mAppearanceRect, where))
 	{
 		mController->setAppearance (mDark ? 0 : 1);
@@ -1058,6 +1333,10 @@ CMouseEventResult RootView::onMouseDown (CPoint& where, const CButtonState& butt
 	{
 		if (!hit (seg.r, where))
 			continue;
+		// Analog is inert under CLEAN -- drawn dimmed, and it stays that
+		// way rather than accepting a click that would do nothing audible.
+		if (seg.id == kParamAnalogId && stepOf (kParamModelId) != kModelSignature)
+			return kMouseEventHandled;
 		mDrag = Drag::Segment;
 		mDragId = seg.id;
 		const int n = static_cast<int> (seg.labels.size ());
@@ -1163,6 +1442,56 @@ void RootView::applySliderFrom (Slider& sl, CCoord x, bool fine)
 
 	if (std::fabs (n - sl.norm) > 1e-9)
 		mController->changeContinuous (sl.id, n);
+}
+
+//========================================================================
+// Settings panel
+//========================================================================
+void RootView::openSettings ()
+{
+	mSettingsOpen = true;
+	invalid ();
+}
+
+//------------------------------------------------------------------------
+void RootView::closeSettings ()
+{
+	mSettingsOpen = false;
+	invalid ();
+}
+
+//------------------------------------------------------------------------
+void RootView::chooseBackgroundImage ()
+{
+	auto* frame = getFrame ();
+	if (!frame)
+		return;
+
+	auto* selector = VSTGUI::CNewFileSelector::create (frame, VSTGUI::CNewFileSelector::kSelectFile);
+	if (!selector)
+		return;
+
+	selector->setTitle ("Choose Background Image");
+	selector->addFileExtension (VSTGUI::CFileExtension ("PNG Image", "png"));
+	selector->addFileExtension (VSTGUI::CFileExtension ("JPEG Image", "jpg"));
+	selector->addFileExtension (VSTGUI::CFileExtension ("JPEG Image", "jpeg"));
+	selector->addFileExtension (VSTGUI::CFileExtension ("Bitmap Image", "bmp"));
+	selector->setDefaultExtension (VSTGUI::CFileExtension ("PNG Image", "png"));
+
+	selector->run ([this] (VSTGUI::CNewFileSelector* sel) {
+		if (sel->getNumSelectedFiles () > 0)
+		{
+			if (auto* path = sel->getSelectedFile (0))
+				setBackgroundImagePath (path);
+		}
+	});
+	selector->forget ();
+}
+
+//------------------------------------------------------------------------
+void RootView::clearBackgroundImage ()
+{
+	setBackgroundImagePath (std::string ());
 }
 
 //------------------------------------------------------------------------

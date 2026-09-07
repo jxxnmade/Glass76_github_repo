@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //------------------------------------------------------------------------
 
 #pragma once
@@ -92,6 +92,7 @@ protected:
 	Steinberg::Vst::ParamValue mAnalogNorm {0.0};
 	Steinberg::Vst::ParamValue mMixNorm {1.0};
 	Steinberg::Vst::ParamValue mTrimNorm {0.5};
+	Steinberg::Vst::ParamValue mModelNorm {1.0};   // Signature by default; see constructor
 	bool mAutoMakeup {false};
 	bool mCompOff {false};
 	bool mBypass {false};
@@ -112,6 +113,7 @@ protected:
 	double mNoiseGain {0.0};
 	bool mAnalogOn {false};
 	bool mAllButtonsIn {false};
+	bool mSignatureModel {true};   // false = Glass76 CLEAN
 
 	//--- running state, audio thread only --------------------------------
 	double mGrDb {0.0};           // current gain reduction, dB, positive
@@ -125,9 +127,12 @@ protected:
 	uint32_t mNoiseSeed {0x9E3779B9u};
 
 	//--- meter ballistics ------------------------------------------------
+	// IN and OUT are VU: a running mean-square with a 300 ms time constant,
+	// which is what a VU meter integrates. GR keeps a faster fall than rise
+	// so the needle drops back the way the hardware's does.
 	double mMeterGrDb {0.0};
-	double mMeterInDb {-60.0};
-	double mMeterOutDb {-60.0};
+	double mVuInMeanSquare {0.0};
+	double mVuOutMeanSquare {0.0};
 	double mVuCoef {0.0};
 	double mVuReleaseCoef {0.0};
 };

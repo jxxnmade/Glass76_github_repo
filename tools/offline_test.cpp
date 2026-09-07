@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //
 // Offline test host for Glass76.
 //
@@ -28,6 +28,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -125,6 +126,161 @@ public:
 		}
 		mComponent->setActive (true);
 		mProcessor->setProcessing (true);
+		return true;
+	}
+
+	/** Push a prepared mono buffer through the plug-in (duplicated to both
+	    channels) and return the output RMS in dBFS. The first 25 % is
+	    discarded so the envelope has settled before anything is measured. */
+	double runBuffer (const std::vector<float>& input,
+	                  const std::vector<std::pair<ParamID, ParamValue>>& params)
+	{
+		if (auto ctrl = controller ())
+		{
+			for (const auto& p : params)
+				ctrl->setParamNormalized (p.first, p.second);
+		}
+
+		HostProcessData data;
+		if (!data.prepare (*mComponent, kBlock, kSample32))
+			return -300.0;
+		data.processMode = kRealtime;
+		data.symbolicSampleSize = kSample32;
+		data.numSamples = kBlock;
+
+		ParameterChanges inChanges (16), outChanges (16);
+		data.inputParameterChanges = &inChanges;
+		data.outputParameterChanges = &outChanges;
+
+		float* inL = data.inputs[0].channelBuffers32[0];
+		float* inR = data.inputs[0].numChannels > 1 ? data.inputs[0].channelBuffers32[1] : inL;
+		float* outL = data.outputs[0].channelBuffers32[0];
+
+		const int32 blocks = static_cast<int32> (input.size ()) / kBlock;
+		const int32 measureFrom = blocks / 4;
+		double sumSquares = 0.0;
+		int64 count = 0;
+
+		for (int32 b = 0; b < blocks; b++)
+		{
+			inChanges.clearQueue ();
+			outChanges.clearQueue ();
+			for (const auto& p : params)
+			{
+				int32 index = 0;
+				if (auto* q = inChanges.addParameterData (p.first, index))
+				{
+					int32 point = 0;
+					q->addPoint (0, p.second, point);
+				}
+			}
+			for (int32 i = 0; i < kBlock; i++)
+			{
+				inL[i] = input[b * kBlock + i];
+				inR[i] = inL[i];
+			}
+			data.inputs[0].silenceFlags = 0;
+			data.outputs[0].silenceFlags = 0;
+			if (mProcessor->process (data) != kResultOk)
+				return -300.0;
+			if (b >= measureFrom)
+			{
+				for (int32 i = 0; i < kBlock; i++)
+				{
+					const double v = outL[i];
+					sumSquares += v * v;
+					count++;
+				}
+			}
+		}
+		if (count == 0)
+			return -300.0;
+		return 10.0 * std::log10 (std::max (sumSquares / count, 1e-30));
+	}
+
+	/** Stream a raw interleaved-stereo float32 file through the plug-in. */
+	bool processRawFile (const char* inPath, const char* outPath,
+	                     const std::vector<std::pair<ParamID, ParamValue>>& params)
+	{
+		FILE* fin = std::fopen (inPath, "rb");
+		if (!fin)
+		{
+			std::printf ("cannot open %s\n", inPath);
+			return false;
+		}
+		FILE* fout = std::fopen (outPath, "wb");
+		if (!fout)
+		{
+			std::fclose (fin);
+			std::printf ("cannot write %s\n", outPath);
+			return false;
+		}
+
+		if (auto ctrl = controller ())
+		{
+			for (const auto& p : params)
+				ctrl->setParamNormalized (p.first, p.second);
+		}
+
+		HostProcessData data;
+		if (!data.prepare (*mComponent, kBlock, kSample32))
+		{
+			std::fclose (fin);
+			std::fclose (fout);
+			return false;
+		}
+		data.processMode = kRealtime;
+		data.symbolicSampleSize = kSample32;
+		data.numSamples = kBlock;
+
+		ParameterChanges inChanges (16), outChanges (16);
+		data.inputParameterChanges = &inChanges;
+		data.outputParameterChanges = &outChanges;
+
+		float* inL = data.inputs[0].channelBuffers32[0];
+		float* inR = data.inputs[0].numChannels > 1 ? data.inputs[0].channelBuffers32[1] : inL;
+		float* outL = data.outputs[0].channelBuffers32[0];
+		float* outR = data.outputs[0].numChannels > 1 ? data.outputs[0].channelBuffers32[1] : outL;
+
+		std::vector<float> inter (kBlock * 2);
+		int64 frames = 0;
+		while (true)
+		{
+			const size_t got = std::fread (inter.data (), sizeof (float), kBlock * 2, fin);
+			const int32 n = static_cast<int32> (got / 2);
+			if (n <= 0)
+				break;
+			for (int32 i = 0; i < kBlock; i++)
+			{
+				inL[i] = (i < n) ? inter[i * 2] : 0.f;
+				inR[i] = (i < n) ? inter[i * 2 + 1] : 0.f;
+			}
+			inChanges.clearQueue ();
+			outChanges.clearQueue ();
+			for (const auto& p : params)
+			{
+				int32 index = 0;
+				if (auto* q = inChanges.addParameterData (p.first, index))
+				{
+					int32 point = 0;
+					q->addPoint (0, p.second, point);
+				}
+			}
+			data.inputs[0].silenceFlags = 0;
+			data.outputs[0].silenceFlags = 0;
+			if (mProcessor->process (data) != kResultOk)
+				break;
+			for (int32 i = 0; i < n; i++)
+			{
+				inter[i * 2] = outL[i];
+				inter[i * 2 + 1] = outR[i];
+			}
+			std::fwrite (inter.data (), sizeof (float), n * 2, fout);
+			frames += n;
+		}
+		std::fclose (fin);
+		std::fclose (fout);
+		std::printf ("processed %lld frames\n", (long long) frames);
 		return true;
 	}
 
@@ -352,6 +508,223 @@ inline ParamValue gainMark (int markIndex) { return markIndex / 8.0; }
 /** Attack and release are continuous 1..7, linear in the knob number. */
 inline ParamValue timePos (double position) { return (position - 1.0) / 6.0; }
 } // namespace waves
+
+//------------------------------------------------------------------------
+// A stand-in for a dense modern master: a decaying 50 Hz sub on every
+// beat, a noise transient on every off-beat, and a sustained mid tone
+// underneath, peak-normalised. Crest factor lands around 8 dB, which is
+// roughly what a loud trap master has.
+//------------------------------------------------------------------------
+std::vector<float> makeProgramMaterial (double seconds, double bpm, double peakDbFs)
+{
+	const int n = static_cast<int> (kSampleRate * seconds);
+	std::vector<float> buf (n, 0.f);
+	const double beat = 60.0 / bpm;
+	uint32_t seed = 0x12345678u;
+
+	for (int i = 0; i < n; i++)
+	{
+		const double t = i / kSampleRate;
+		const double inBeat = std::fmod (t, beat);
+		const double inHalf = std::fmod (t, beat * 0.5);
+
+		// 808: decaying sine, the loudest sustained element.
+		double v = std::sin (2.0 * 3.14159265358979 * 50.0 * t) *
+		           std::exp (-inBeat * 5.0) * 0.9;
+		// Hat: very short noise burst on the off-beat -- the transient.
+		seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+		const double noise = (static_cast<double> (seed) * 2.3283064365386963e-10 - 0.5) * 2.0;
+		v += noise * std::exp (-inHalf * 900.0) * 0.7;
+		// A sustained mid element so the compressor never fully releases.
+		v += std::sin (2.0 * 3.14159265358979 * 330.0 * t) * 0.18;
+
+		buf[i] = static_cast<float> (v);
+	}
+
+	double peak = 0.0;
+	for (float s : buf)
+		peak = std::max (peak, std::fabs (static_cast<double> (s)));
+	const double scale = (peak > 0.0) ? dbToLinear (peakDbFs) / peak : 1.0;
+	for (float& s : buf)
+		s = static_cast<float> (s * scale);
+	return buf;
+}
+
+/** Push a prepared buffer through a plug-in and return its output RMS in
+    dBFS. Uses its own fresh instance, opened by the caller. */
+double runBuffer (Runner& r, const std::vector<float>& input,
+                  const std::vector<std::pair<ParamID, ParamValue>>& params)
+{
+	return r.runBuffer (input, params);
+}
+
+int runProgramComparison (const char* glassPath, const char* wavesPath)
+{
+	const auto material = makeProgramMaterial (4.0, 140.0, -0.3);
+	double inSum = 0.0;
+	for (float s : material)
+		inSum += static_cast<double> (s) * s;
+	const double inRmsDb = 10.0 * std::log10 (inSum / material.size ());
+	std::printf ("\nProgram material: %.1f s, peak -0.3 dBFS, RMS %s dBFS "
+	             "(crest %s dB)\n",
+	             material.size () / kSampleRate, f2 (inRmsDb).c_str (),
+	             f2 (-0.3 - inRmsDb).c_str ());
+
+	std::printf ("%-40s %9s %9s %8s\n", "settings", "Glass76", "CLA-76", "delta");
+	std::printf ("%s\n", std::string (70, '-').c_str ());
+
+	struct Case { const char* label; int inMark, outMark, ratioStep; bool autoMakeup; };
+	static const Case cases[] = {
+		{"in 4 / out 4, 4:1",            4, 4, 3, false},
+		{"in 6 / out 4, 4:1",            6, 4, 3, false},
+		{"in 6 / out 4, 20:1",           6, 4, 0, false},
+		{"in 6 / out 4, 4:1, AUTO MAKEUP", 6, 4, 3, true},
+	};
+
+	for (const auto& c : cases)
+	{
+		std::vector<std::pair<ParamID, ParamValue>> gp {
+			{kParamInputId, c.inMark / 8.0},
+			{kParamOutputId, c.outMark / 8.0},
+			{kParamRatioId, step (c.ratioStep, kRatioStepCount)},
+			{kParamAttackId, step (1, kTimeStepCount)},
+			{kParamReleaseId, step (2, kTimeStepCount)},
+			{kParamCompOffId, 0.0},
+			{kParamAutoMakeupId, c.autoMakeup ? 1.0 : 0.0},
+			{kParamAnalogId, step (kAnalogOff, kAnalogStepCount)},
+			{kParamMixId, 1.0},
+			{kParamTrimId, trimDbToNormalized (0.0)},
+		};
+		std::vector<std::pair<ParamID, ParamValue>> wp {
+			{waves::kInput, waves::gainMark (c.inMark)},
+			{waves::kOutput, waves::gainMark (c.outMark)},
+			{waves::kRatio, step (c.ratioStep, kRatioStepCount)},
+			{waves::kAttack, waves::timePos (3.0)},
+			{waves::kRelease, waves::timePos (5.0)},
+			{waves::kCompOff, 0.0},
+			{waves::kAutoMakeup, c.autoMakeup ? 1.0 : 0.0},
+			{waves::kAnalog, step (2, 3)},
+			{waves::kMix, 1.0},
+			{waves::kTrim, 0.5},
+			{waves::kRevision, 1.0},
+		};
+
+		std::string err;
+		double g = 0.0, w = 0.0;
+		{
+			Runner r;
+			if (!r.open (glassPath, err))
+			{
+				std::printf ("Glass76: %s\n", err.c_str ());
+				return 1;
+			}
+			g = runBuffer (r, material, gp);
+		}
+		{
+			Runner r;
+			if (!r.open (wavesPath, err, "CLA-76 Stereo"))
+			{
+				std::printf ("CLA-76: %s\n", err.c_str ());
+				return 1;
+			}
+			w = runBuffer (r, material, wp);
+		}
+		std::printf ("%-40s %9s %9s %+8.2f\n", c.label, f2 (g).c_str (), f2 (w).c_str (), g - w);
+	}
+
+	std::printf ("\nA positive delta means Glass76 is louder.\n");
+	return 0;
+}
+
+int runGainLaw (const char* glassPath, const char* wavesPath)
+{
+	Runner glass, waves;
+	std::string err;
+	if (!glass.open (glassPath, err))
+	{
+		std::printf ("Glass76: %s\n", err.c_str ());
+		return 1;
+	}
+	if (!waves.open (wavesPath, err, "CLA-76 Stereo"))
+	{
+		std::printf ("CLA-76: %s\n", err.c_str ());
+		return 1;
+	}
+
+	auto glassParams = [] (double inNorm, double outNorm) {
+		return std::vector<std::pair<ParamID, ParamValue>> {
+			{kParamInputId, inNorm}, {kParamOutputId, outNorm},
+			{kParamRatioId, step (3, kRatioStepCount)},
+			{kParamAttackId, step (1, kTimeStepCount)},
+			{kParamReleaseId, step (2, kTimeStepCount)},
+			{kParamCompOffId, 0.0}, {kParamAutoMakeupId, 0.0},
+			{kParamAnalogId, step (kAnalogOff, kAnalogStepCount)},
+			{kParamMixId, 1.0}, {kParamTrimId, trimDbToNormalized (0.0)},
+		};
+	};
+	auto wavesParams = [] (double inNorm, double outNorm) {
+		return std::vector<std::pair<ParamID, ParamValue>> {
+			{waves::kInput, inNorm}, {waves::kOutput, outNorm},
+			{waves::kRatio, step (3, kRatioStepCount)},
+			{waves::kAttack, waves::timePos (3.0)},
+			{waves::kRelease, waves::timePos (5.0)},
+			{waves::kCompOff, 0.0}, {waves::kAutoMakeup, 0.0},
+			{waves::kAnalog, step (2, 3)},
+			{waves::kMix, 1.0}, {waves::kTrim, 0.5}, {waves::kRevision, 1.0},
+		};
+	};
+
+	// -55 dBFS: quiet enough that nothing compresses even at the hottest
+	// input mark, loud enough to stay clear of the plug-in's noise floor
+	// (-70 dBFS sat in it and produced nonsense).
+	const double probeDb = -55.0;
+	const double probeRms = probeDb - 3.01;
+	auto gainOf = [&] (Runner& r, const std::vector<std::pair<ParamID, ParamValue>>& p) {
+		return linearToDb (r.run (dbToLinear (probeDb), 220.0, 2.0, p, 1.0).outRms) - probeRms;
+	};
+
+	// Linearity check: the probe must be below threshold, or these numbers
+	// are gain reduction, not gain law.
+	{
+		auto p = wavesParams (4 / 8.0, 4 / 8.0);
+		const double a = linearToDb (waves.run (dbToLinear (-55.0), 220.0, 2.0, p, 1.0).outRms);
+		const double b = linearToDb (waves.run (dbToLinear (-50.0), 220.0, 2.0, p, 1.0).outRms);
+		std::printf ("\nlinearity probe (CLA-76, marks 4/4): +5 dB in -> %+.2f dB out%s\n",
+		             b - a, (std::fabs ((b - a) - 5.0) < 0.3) ? "  [clean]" : "  [COMPRESSING - suspect]");
+	}
+
+	std::printf ("\n%s\n", std::string (64, '=').c_str ());
+	std::printf ("INPUT sweep (output held at mark 4 = -24 dB)\n");
+	std::printf ("%s\n", std::string (64, '=').c_str ());
+	std::printf ("  %-18s %12s %12s %9s\n", "input mark", "Glass76", "CLA-76", "delta");
+	for (int m = 1; m <= 8; m++)
+	{
+		const double g = gainOf (glass, glassParams (m / 8.0, 4 / 8.0));
+		const double w = gainOf (waves, wavesParams (m / 8.0, 4 / 8.0));
+		std::printf ("  %d (%6.0f dB)     %12.2f %12.2f %+9.2f\n",
+		             m, kGainStepsDb[m], g, w, g - w);
+	}
+
+	std::printf ("\n%s\n", std::string (64, '=').c_str ());
+	std::printf ("OUTPUT sweep (input held at mark 4 = -24 dB)\n");
+	std::printf ("%s\n", std::string (64, '=').c_str ());
+	std::printf ("  %-18s %12s %12s %9s\n", "output mark", "Glass76", "CLA-76", "delta");
+	for (int m = 1; m <= 8; m++)
+	{
+		const double g = gainOf (glass, glassParams (4 / 8.0, m / 8.0));
+		const double w = gainOf (waves, wavesParams (4 / 8.0, m / 8.0));
+		std::printf ("  %d (%6.0f dB)     %12.2f %12.2f %+9.2f\n",
+		             m, kGainStepsDb[m], g, w, g - w);
+	}
+
+	std::printf ("\nThe user's render used input mark 3 (-30) / output mark 5 (-18):\n");
+	{
+		const double g = gainOf (glass, glassParams (3 / 8.0, 5 / 8.0));
+		const double w = gainOf (waves, wavesParams (3 / 8.0, 5 / 8.0));
+		std::printf ("  Glass76 %+.2f dB   CLA-76 %+.2f dB   delta %+.2f dB\n", g, w, g - w);
+	}
+	return 0;
+}
 
 int runComparison (const char* glassPath, const char* wavesPath)
 {
@@ -584,6 +957,59 @@ int main (int argc, char* argv[])
 	if (std::string (argv[1]) == "--compare" && argc >= 4)
 		return runComparison (argv[2], argv[3]);
 
+	// --program <glass76.vst3> <waveshell.vst3>
+	//
+	// A steady tone only exercises the gain computer. This drives both
+	// plug-ins with dense, transient-heavy material at a modern master's
+	// level and crest factor, which is where a clone actually diverges.
+	// Each measurement gets a fresh plug-in instance, because the Waves
+	// shell latches settings unreliably when one is reused.
+	if (std::string (argv[1]) == "--program" && argc >= 4)
+		return runProgramComparison (argv[2], argv[3]);
+
+	// --gainlaw <glass76.vst3> <waveshell.vst3>
+	//
+	// Sweeps each attenuator on its own with a signal far below the
+	// threshold, so gain reduction is zero and what comes out is purely the
+	// control's gain law. A real render showed the CLA-76 does not treat its
+	// two controls as matching 1:1 dB attenuators, and this is what pins
+	// down the actual curve.
+	if (std::string (argv[1]) == "--gainlaw" && argc >= 4)
+		return runGainLaw (argv[2], argv[3]);
+
+	// --processraw <plugin> <in.raw> <out.raw> <inMark> <outMark> [ratioStep]
+	//
+	// Runs real material (raw interleaved stereo float32 at 48 kHz) through
+	// the plug-in. This is how Glass76 gets fitted against the CLA-76: the
+	// reference curve comes from a render made inside FL Studio, where Waves
+	// is properly licensed, and the candidate curve comes from here.
+	if (std::string (argv[1]) == "--processraw" && argc >= 7)
+	{
+		Runner r;
+		std::string perr;
+		if (!r.open (argv[2], perr))
+		{
+			std::printf ("could not load: %s\n", perr.c_str ());
+			return 1;
+		}
+		const int inMark = std::atoi (argv[5]);
+		const int outMark = std::atoi (argv[6]);
+		const int ratioStep = (argc >= 8) ? std::atoi (argv[7]) : 3;
+		const std::vector<std::pair<ParamID, ParamValue>> params {
+			{kParamInputId, inMark / 8.0},
+			{kParamOutputId, outMark / 8.0},
+			{kParamRatioId, step (ratioStep, kRatioStepCount)},
+			{kParamAttackId, step (1, kTimeStepCount)},   // position 3
+			{kParamReleaseId, step (2, kTimeStepCount)},  // position 5
+			{kParamCompOffId, 0.0},
+			{kParamAutoMakeupId, 0.0},
+			{kParamAnalogId, step (kAnalogOff, kAnalogStepCount)},
+			{kParamMixId, 1.0},
+			{kParamTrimId, trimDbToNormalized (0.0)},
+		};
+		return r.processRawFile (argv[3], argv[4], params) ? 0 : 1;
+	}
+
 	std::string error;
 
 	// Every run gets a fresh instance: a compressor carries envelope state,
@@ -641,9 +1067,12 @@ int main (int argc, char* argv[])
 		if (!measure (amp, 220.0, 1.0, baseline, r))
 			return 1;
 		const double gainDb = linearToDb (r.outPeak) - (-40.0);
-		check (std::fabs (gainDb) < 0.5,
-		       "-24 dB on both attenuators is unity below threshold",
-		       f2 (gainDb) + " dB of error");
+		// Calibrated against the CLA-76, not chosen: marks 4/4 give
+		// kInputMakeupDb + kOutputMakeupDb - 48 dB of static gain.
+		const double expected = kInputMakeupDb + kOutputMakeupDb - 48.0;
+		check (std::fabs (gainDb - expected) < 0.5,
+		       "static gain at marks 4/4 matches the calibration",
+		       f2 (gainDb) + " dB, expected " + f2 (expected));
 		check (r.meterGrDb < 0.5, "no gain reduction below threshold",
 		       f2 (r.meterGrDb) + " dB");
 	}
@@ -651,18 +1080,23 @@ int main (int argc, char* argv[])
 	//--- 2. Compression above the threshold ---------------------------
 	std::printf ("\nCompression\n");
 	{
-		// -6 dBFS is 12 dB over the threshold. At 4:1 the gain computer
-		// should give 12 * (1 - 1/4) = 9 dB of reduction.
-		const double amp = dbToLinear (-6.0);
+		// At input mark 4 the net drive into the detector is
+		// -24 + kInputMakeupDb. A -24 dBFS signal therefore lands
+		// (-24 + kInputMakeupDb + 24 - kThresholdDb) dB over the threshold,
+		// and 4:1 reduces that by (1 - 1/4).
+		const double amp = dbToLinear (-24.0);
+		const double over = -24.0 - 24.0 + kInputMakeupDb - kThresholdDb;
+		const double expectedGr = over * 0.75;
 		Result r;
 		if (!measure (amp, 220.0, 1.5, baseline, r))
 			return 1;
-		check (r.meterGrDb > 6.0 && r.meterGrDb < 11.0,
-		       "4:1 at 12 dB over threshold gives ~9 dB reduction",
-		       f2 (r.meterGrDb) + " dB");
+		check (std::fabs (r.meterGrDb - expectedGr) < 1.5,
+		       "4:1 reduction matches the gain computer",
+		       f2 (r.meterGrDb) + " dB, expected " + f2 (expectedGr));
 
+		const double staticGain = kInputMakeupDb + kOutputMakeupDb - 48.0;
 		const double outDb = linearToDb (r.outPeak);
-		check (outDb < -10.0, "output is pulled down accordingly",
+		check (outDb < -24.0 + staticGain - 1.0, "output is pulled down accordingly",
 		       f2 (outDb) + " dBFS");
 	}
 	{
@@ -722,10 +1156,11 @@ int main (int argc, char* argv[])
 			return 1;
 		if (!measure (amp, 220.0, 1.0, withParam (kParamTrimId, trimDbToNormalized (-6.0)), minus))
 			return 1;
-		const double up = linearToDb (plus.outPeak) - (-40.0);
-		const double down = linearToDb (minus.outPeak) - (-40.0);
-		check (std::fabs (up - 6.0) < 0.4, "Trim +6 dB", f2 (up) + " dB");
-		check (std::fabs (down + 6.0) < 0.4, "Trim -6 dB", f2 (down) + " dB");
+		// Compare the two against each other, not against the input: that
+		// tests Trim itself rather than the gain staging around it.
+		const double spread = linearToDb (plus.outPeak) - linearToDb (minus.outPeak);
+		check (std::fabs (spread - 12.0) < 0.4, "Trim spans 12 dB from -6 to +6",
+		       f2 (spread) + " dB");
 	}
 
 	//--- 5. Attenuators -----------------------------------------------
@@ -739,13 +1174,16 @@ int main (int argc, char* argv[])
 		       f2 (linearToDb (r.outPeak)) + " dBFS");
 	}
 	{
-		// Output detent 8 (0 dB) is 24 dB above the unity detent.
+		// Mark 4 (-24 dB) to mark 8 (0 dB) is 24 dB of attenuator travel,
+		// whatever the fixed make-up behind it happens to be.
 		const double amp = dbToLinear (-40.0);
-		Result r;
-		if (!measure (amp, 220.0, 0.5, withParam (kParamOutputId, step (8, kGainStepCount)), r))
+		Result low, high;
+		if (!measure (amp, 220.0, 0.5, baseline, low))
 			return 1;
-		const double lift = linearToDb (r.outPeak) - (-40.0);
-		check (std::fabs (lift - 24.0) < 0.6, "Output detent 0 dB is +24 dB of make-up",
+		if (!measure (amp, 220.0, 0.5, withParam (kParamOutputId, step (8, kGainStepCount)), high))
+			return 1;
+		const double lift = linearToDb (high.outPeak) - linearToDb (low.outPeak);
+		check (std::fabs (lift - 24.0) < 0.6, "Output mark 4 -> mark 8 is +24 dB",
 		       f2 (lift) + " dB");
 	}
 
@@ -771,14 +1209,21 @@ int main (int argc, char* argv[])
 	//--- 7. Meters ----------------------------------------------------
 	std::printf ("\nMeters\n");
 	{
-		const double amp = dbToLinear (-12.0);
+		// IN and OUT are a VU meter now: RMS, with 0 VU = -18 dBFS. A sine
+		// peaking at -24 dBFS has an RMS of -27.01 dBFS, so the needle should
+		// sit at -9.0 VU. Chosen to stay clear of the +3 VU top of the scale.
+		const double amp = dbToLinear (-24.0);
+		const double expectedVu = dbFsToVu (-24.0 - 3.01);
 		Result r;
-		if (!measure (amp, 220.0, 2.0, baseline, r))
+		if (!measure (amp, 220.0, 2.5, baseline, r))
 			return 1;
-		check (std::fabs (r.meterInDb - (-12.0)) < 1.5, "IN meter tracks the input",
-		       f2 (r.meterInDb) + " dBFS");
-		check (r.meterOutDb < r.meterInDb + 0.5, "OUT meter is at or below IN while compressing",
-		       f2 (r.meterOutDb) + " dBFS");
+		check (std::fabs (r.meterInDb - expectedVu) < 1.0,
+		       "IN meter reads the input in VU",
+		       f2 (r.meterInDb) + " VU, expected " + f2 (expectedVu));
+		const double staticGain = kInputMakeupDb + kOutputMakeupDb - 48.0;
+		check (r.meterOutDb < r.meterInDb + staticGain + 0.5,
+		       "OUT meter shows reduction relative to the static gain",
+		       f2 (r.meterOutDb) + " VU vs IN " + f2 (r.meterInDb) + " + " + f2 (staticGain));
 	}
 
 	std::printf ("\n%s  (%d failure%s)\n",

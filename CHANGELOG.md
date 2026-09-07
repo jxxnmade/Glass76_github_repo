@@ -6,6 +6,49 @@ made with any version will always find the plug-in again.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-07
+
+### Plug-in
+
+- **Glass76 CLEAN / Glass76 Signature** model switch, a new automatable
+  parameter. CLEAN is a mathematically transparent compressor: the attenuator
+  dB is applied as printed with no hidden hardware drive, there is no FET
+  saturation stage, release uses a single time constant instead of the
+  programme-dependent dual one, **All buttons in** behaves as plain 20:1 with
+  none of the threshold/knee/drive quirks, and Analog's mains hum stays off
+  no matter what it is set to. Signature is the unchanged CLA-76-calibrated
+  build from 1.0.0. Projects saved before this version load as Signature, so
+  nothing already mixed changes sound.
+
+### Interface
+
+- The model switch is drawn as a glass slider in the top-left of the
+  toolbar — "Glass76 CLEAN" in the interface's own bold text, "Glass76
+  Signature" in a cursive script face (Segoe Script, with a substitute chain
+  for machines that lack it, the same pattern `macdraw.cpp` already uses for
+  Inter/SF Pro).
+- **Dark is now the default appearance** on first launch.
+- Warm beige/creme palette in both appearances, replacing the cold blue
+  accent and white surfaces: sliders, switches, the gauge arc and focus rings
+  are now a tan/beige, and window and glass surfaces lean creme instead of
+  stark white.
+- **Settings panel**, opened from a new gear button in the toolbar: choose an
+  image file to show beneath the glass panels as the background (persisted
+  per-instance in controller state, same mechanism as the appearance
+  preference), and credits, signed in the script face.
+- The Analog control dims and stops responding to clicks while Glass76 CLEAN
+  is selected, since it has no effect there.
+
+### Packaging
+
+- Vendor renamed from "Jaxson" to **jxxnmade** in the plug-in factory info
+  and the Windows file version resource.
+
+### Verified
+
+- SDK validator 47/47, offline DSP host all checks passed, from a clean
+  rebuild — the default (Signature) model measures identically to 1.0.0.
+
 ## [1.0.0] — 2026-09-06
 
 First public release.
@@ -56,5 +99,6 @@ First public release.
 - Not yet verified: behaviour inside FL Studio itself, and rendering at 125 %
   and 150 % display scaling.
 
-[Unreleased]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.0.0...v1.2.0
 [1.0.0]: https://github.com/jxxnmade/Glass76_github_repo/releases/tag/v1.0.0

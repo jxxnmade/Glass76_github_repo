@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //
 // Glass76Controller -- the UI / parameter side. Runs on the main thread.
 //
@@ -18,6 +18,8 @@
 
 #include "public.sdk/source/vst/vsteditcontroller.h"
 #include "vstgui/plugin-bindings/vst3editor.h"
+
+#include <string>
 
 namespace Jaxson {
 
@@ -75,6 +77,13 @@ public:
 	int getAppearance () const { return mAppearance; }
 	void setAppearance (int appearance) { mAppearance = appearance ? 1 : 0; }
 
+	/** Absolute path to a user-chosen background image, or empty for none.
+	    Same story as appearance: a UI preference in the controller's own
+	    state, not a parameter. The view does the actual loading; this is
+	    just the persisted string. */
+	const std::string& getBackgroundImagePath () const { return mBackgroundImagePath; }
+	void setBackgroundImagePath (const std::string& path) { mBackgroundImagePath = path; }
+
 	//--- Interface ------------------------------------------------------
 	DEFINE_INTERFACES
 	END_DEFINE_INTERFACES (EditController)
@@ -82,7 +91,8 @@ public:
 
 private:
 	RootView* mRoot {nullptr};
-	int mAppearance {0};
+	int mAppearance {1};   // dark by default
+	std::string mBackgroundImagePath;
 };
 
 //------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //------------------------------------------------------------------------
 
 #include "macdraw.h"
@@ -326,6 +326,14 @@ const Fonts& Fonts::get ()
 		const char* displayFamily = firstAvailable (
 		    {"Inter Display", "Inter", "SF Pro Display", "Segoe UI Variable Display",
 		     "Segoe UI Variable", "Segoe UI"});
+		// A genuine script face for the "Glass76 Signature" wordmark. These
+		// are Microsoft/foundry-licensed system fonts, not something this
+		// plug-in can bundle the way Inter is bundled, so it is a pure
+		// substitute chain -- Segoe Script ships with Windows itself and is
+		// the most likely to actually be present.
+		const char* signatureFamily = firstAvailable (
+		    {"Segoe Script", "Brush Script MT", "Lucida Handwriting",
+		     "Monotype Corsiva", "Segoe Print"});
 
 		Fonts f;
 		f.family = textFamily;
@@ -342,6 +350,8 @@ const Fonts& Fonts::get ()
 		f.subhead = owned (new CFontDesc (textFamily, 11, kNormalFace));
 		f.subheadEmph = owned (new CFontDesc (textFamily, 11, kBoldFace));
 		f.caption = owned (new CFontDesc (textFamily, 10, kNormalFace));
+		f.signature = owned (new CFontDesc (signatureFamily, 17, kNormalFace));
+		f.signatureSmall = owned (new CFontDesc (signatureFamily, 15, kNormalFace));
 		return f;
 	}();
 

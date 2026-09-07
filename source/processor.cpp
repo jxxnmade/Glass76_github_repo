@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------
-// Copyright (c) 2026 Jaxson
+// Copyright (c) 2026 jxxnmade
 //------------------------------------------------------------------------
 
 #include "processor.h"
@@ -54,6 +54,7 @@ Glass76Processor::Glass76Processor ()
 	mAnalogNorm = stepToNormalized (kAnalogDefaultStep, kAnalogStepCount);
 	mMixNorm = kMixDefaultPercent / 100.0;
 	mTrimNorm = trimDbToNormalized (kTrimDefaultDb);
+	mModelNorm = stepToNormalized (kModelDefaultStep, kModelStepCount);
 }
 
 //------------------------------------------------------------------------
@@ -93,8 +94,8 @@ tresult PLUGIN_API Glass76Processor::setActive (TBool state)
 		mDcState[0] = mDcState[1] = 0.0;
 		mDcPrevIn[0] = mDcPrevIn[1] = 0.0;
 		mMeterGrDb = 0.0;
-		mMeterInDb = kMeterLevelMinDb;
-		mMeterOutDb = kMeterLevelMinDb;
+		mVuInMeanSquare = 0.0;
+		mVuOutMeanSquare = 0.0;
 	}
 	return AudioEffect::setActive (state);
 }
@@ -145,12 +146,27 @@ tresult PLUGIN_API Glass76Processor::canProcessSampleSize (int32 symbolicSampleS
 //------------------------------------------------------------------------
 void Glass76Processor::updateDerived ()
 {
-	// Continuous, not detented: the printed marks are just a scale.
-	mInputGain = dbToLinear (inputGainDb (mInputNorm));
-	mOutputGain = dbToLinear (outputGainDb (mOutputNorm));
+	const int modelStep = normalizedToStep (mModelNorm, kModelStepCount);
+	mSignatureModel = (modelStep == kModelSignature);
+
+	// Continuous, not detented: the printed marks are just a scale. CLEAN
+	// reads the attenuator exactly as printed; Signature adds the fixed
+	// CLA-76 hardware drive documented in params.h.
+	if (mSignatureModel)
+	{
+		mInputGain = dbToLinear (inputGainDb (mInputNorm));
+		mOutputGain = dbToLinear (outputGainDb (mOutputNorm));
+	}
+	else
+	{
+		mInputGain = dbToLinear (normalizedToAttenuatorDb (mInputNorm));
+		mOutputGain = dbToLinear (normalizedToAttenuatorDb (mOutputNorm));
+	}
 
 	const int ratioStep = normalizedToStep (mRatioNorm, kRatioStepCount);
-	mAllButtonsIn = (ratioStep == kRatioAllStep);
+	// All-buttons-in is a hardware quirk, not a ratio: CLEAN just runs the
+	// table's nominal ratio (20:1, same as index 0) with no other change.
+	mAllButtonsIn = mSignatureModel && (ratioStep == kRatioAllStep);
 	const double ratio = kRatioValues[clampIndex (ratioStep, kRatioStepCount)];
 	mRatioK = 1.0 - 1.0 / ratio;
 
@@ -177,7 +193,9 @@ void Glass76Processor::updateDerived ()
 	mSatDrive = mAllButtonsIn ? 2.2 : 1.0;
 
 	const int analogStep = normalizedToStep (mAnalogNorm, kAnalogStepCount);
-	mAnalogOn = (analogStep != kAnalogOff);
+	// Mains hum is circuit character, not math -- CLEAN never has it, no
+	// matter what the Analog switch is set to.
+	mAnalogOn = mSignatureModel && (analogStep != kAnalogOff);
 	const double humHz = (analogStep == kAnalog50) ? 50.0 : 60.0;
 	mHumPhaseInc = 2.0 * 3.14159265358979323846 * humHz / mSampleRate;
 	// Composite hum around -78 dBFS, noise floor around -96 dBFS. Both are
@@ -221,6 +239,7 @@ void Glass76Processor::handleParameterChanges (IParameterChanges* changes)
 			case kParamReleaseId:    mReleaseNorm = value; derivedDirty = true; break;
 			case kParamRatioId:      mRatioNorm = value;   derivedDirty = true; break;
 			case kParamAnalogId:     mAnalogNorm = value;  derivedDirty = true; break;
+			case kParamModelId:      mModelNorm = value;   derivedDirty = true; break;
 			case kParamMeterId:      mMeterNorm = value;   break;
 			case kParamMixId:        mMixNorm = value;     break;
 			case kParamTrimId:       mTrimNorm = value;    break;
@@ -255,6 +274,8 @@ void Glass76Processor::processAudio (ProcessData& data)
 		}
 		mGrDb = 0.0;
 		mMeterGrDb = 0.0;
+		mVuInMeanSquare = 0.0;
+		mVuOutMeanSquare = 0.0;
 		data.outputs[0].silenceFlags = data.inputs[0].silenceFlags;
 		return;
 	}
@@ -272,10 +293,12 @@ void Glass76Processor::processAudio (ProcessData& data)
 	double humPhase = mHumPhase;
 	uint32_t seed = mNoiseSeed;
 
-	// Peak trackers for the meters, taken over the whole block.
-	double blockInPeak = 0.0;
-	double blockOutPeak = 0.0;
+	// Meter accumulators for the block. GR is a peak (the needle should show
+	// the worst reduction), IN and OUT are sums of squares because a VU
+	// meter integrates power, not peaks.
 	double blockGrPeak = 0.0;
+	double blockInSumSquares = 0.0;
+	double blockOutSumSquares = 0.0;
 
 	for (int32 i = 0; i < numSamples; i++)
 	{
@@ -284,10 +307,14 @@ void Glass76Processor::processAudio (ProcessData& data)
 		for (int32 ch = 0; ch < numChannels; ch++)
 			x[ch] = static_cast<double> (in[ch][i]);
 
-		double inPeak = std::fabs (x[0]);
-		if (numChannels > 1)
-			inPeak = std::max (inPeak, std::fabs (x[1]));
-		blockInPeak = std::max (blockInPeak, inPeak);
+		// Mono sum of the channels for the meter, matching how a single
+		// hardware needle is fed.
+		{
+			double v = x[0];
+			if (numChannels > 1)
+				v = 0.5 * (x[0] + x[1]);
+			blockInSumSquares += v * v;
+		}
 
 		//--- input attenuator + fixed make-up ---------------------------
 		double s[2] = {x[0] * mInputGain, x[1] * mInputGain};
@@ -331,18 +358,23 @@ void Glass76Processor::processAudio (ProcessData& data)
 				targetGr = 60.0;
 		}
 
-		//--- ballistics, with programme-dependent release ----------------
+		//--- ballistics ---------------------------------------------------
 		if (targetGr > grDb)
 		{
 			grDb += (targetGr - grDb) * mAttackCoef;
 		}
-		else
+		else if (mSignatureModel)
 		{
 			// The longer the compressor has been working, the slower it
-			// lets go -- the 1176's dual time constant.
+			// lets go -- the 1176's dual time constant. CLEAN uses the
+			// release knob's own time with no programme dependency.
 			const double w = std::clamp (grSustain / 12.0, 0.0, 1.0);
 			const double coef = mReleaseFastCoef + (mReleaseSlowCoef - mReleaseFastCoef) * w;
 			grDb += (targetGr - grDb) * coef;
+		}
+		else
+		{
+			grDb += (targetGr - grDb) * mReleaseFastCoef;
 		}
 		grDb = flush (grDb);
 		grSustain += (grDb - grSustain) * mSustainCoef;
@@ -353,7 +385,8 @@ void Glass76Processor::processAudio (ProcessData& data)
 		const double makeupLin = mAutoMakeup ? dbToLinear (std::clamp (makeup, 0.0, 30.0)) : 1.0;
 
 		const double gr = dbToLinear (-grDb);
-		// The FET is driven harder the harder it is working.
+		// The FET is driven harder the harder it is working. Unused in
+		// CLEAN, where mSatDrive is always 1 and no saturation is applied.
 		const double drive = mSatDrive * (1.0 + grDb * 0.020);
 
 		//--- output stage ------------------------------------------------
@@ -362,25 +395,32 @@ void Glass76Processor::processAudio (ProcessData& data)
 		{
 			double v = s[ch] * gr;
 
-			// Asymmetric soft clip: second harmonic then a rational fold.
-			const double d = v * drive;
-			const double a = d + 0.10 * d * d;
-			double sat = (a / std::sqrt (1.0 + a * a)) / drive;
+			if (mSignatureModel)
+			{
+				// Asymmetric soft clip: second harmonic then a rational fold.
+				const double d = v * drive;
+				const double a = d + 0.10 * d * d;
+				double sat = (a / std::sqrt (1.0 + a * a)) / drive;
 
-			// The squared term adds DC; a 5 Hz one-pole high-pass removes it.
-			const double hp = sat - mDcPrevIn[ch] + dcR * mDcState[ch];
-			mDcPrevIn[ch] = sat;
-			mDcState[ch] = flush (hp);
-			sat = mDcState[ch];
+				// The squared term adds DC; a 5 Hz one-pole high-pass removes it.
+				const double hp = sat - mDcPrevIn[ch] + dcR * mDcState[ch];
+				mDcPrevIn[ch] = sat;
+				mDcState[ch] = flush (hp);
+				v = mDcState[ch];
+			}
+			// CLEAN: the gain reduction above is the only thing that touches
+			// the signal here -- no drive, no saturation, no DC blocker.
 
-			v = sat * mOutputGain * makeupLin;
+			v = v * mOutputGain * makeupLin;
 			y[ch] = (dry * x[ch] + mix * v) * trim;
 		}
 
-		double outPeak = std::fabs (y[0]);
-		if (numChannels > 1)
-			outPeak = std::max (outPeak, std::fabs (y[1]));
-		blockOutPeak = std::max (blockOutPeak, outPeak);
+		{
+			double v = y[0];
+			if (numChannels > 1)
+				v = 0.5 * (y[0] + y[1]);
+			blockOutSumSquares += v * v;
+		}
 
 		for (int32 ch = 0; ch < numChannels; ch++)
 			out[ch][i] = static_cast<SampleType> (y[ch]);
@@ -396,10 +436,15 @@ void Glass76Processor::processAudio (ProcessData& data)
 	const double blockCoef = std::clamp (mVuCoef * static_cast<double> (numSamples), 0.0, 1.0);
 	const double blockRelCoef = std::clamp (mVuReleaseCoef * static_cast<double> (numSamples), 0.0, 1.0);
 
-	const double inDb = linearToDb (blockInPeak);
-	const double outDb = linearToDb (blockOutPeak);
-	mMeterInDb += (inDb - mMeterInDb) * (inDb > mMeterInDb ? blockCoef : blockRelCoef);
-	mMeterOutDb += (outDb - mMeterOutDb) * (outDb > mMeterOutDb ? blockCoef : blockRelCoef);
+	// IN and OUT integrate mean square, not peak: that is what a VU meter
+	// measures, and it is the only way the numbers can be compared with a
+	// hardware-style needle.
+	const double invN = 1.0 / static_cast<double> (numSamples);
+	mVuInMeanSquare += (blockInSumSquares * invN - mVuInMeanSquare) * blockCoef;
+	mVuOutMeanSquare += (blockOutSumSquares * invN - mVuOutMeanSquare) * blockCoef;
+	mVuInMeanSquare = flush (mVuInMeanSquare);
+	mVuOutMeanSquare = flush (mVuOutMeanSquare);
+
 	mMeterGrDb += (blockGrPeak - mMeterGrDb) * (blockGrPeak > mMeterGrDb ? blockCoef : blockRelCoef);
 
 	// Clear any output channels the input did not supply.
@@ -418,14 +463,21 @@ void Glass76Processor::publishMeters (IParameterChanges* outChanges)
 	if (!outChanges)
 		return;
 
-	const ParamID ids[3] = {kParamMeterGrId, kParamMeterInId, kParamMeterOutId};
-	const ParamValue values[3] = {
+	const ParamID ids[4] = {kParamMeterGrId, kParamMeterInId, kParamMeterOutId,
+	                        kParamMeterMakeupId};
+	const double inVu = dbFsToVu (10.0 * std::log10 (std::max (mVuInMeanSquare, 1e-12)));
+	const double outVu = dbFsToVu (10.0 * std::log10 (std::max (mVuOutMeanSquare, 1e-12)));
+
+	const ParamValue values[4] = {
 		grDbToNormalized (mMeterGrDb),
-		levelDbToNormalized (mMeterInDb),
-		levelDbToNormalized (mMeterOutDb)
+		levelDbToNormalized (inVu),
+		levelDbToNormalized (outVu),
+		// Reported whether or not the switch is on, so the UI can show what
+		// auto make-up would add the moment it is engaged.
+		grDbToNormalized (std::clamp (mMakeupDb, 0.0, 30.0))
 	};
 
-	for (int i = 0; i < 3; i++)
+	for (int i = 0; i < 4; i++)
 	{
 		int32 queueIndex = 0;
 		if (auto* queue = outChanges->addParameterData (ids[i], queueIndex))
@@ -478,6 +530,7 @@ tresult PLUGIN_API Glass76Processor::getState (IBStream* state)
 	streamer.writeDouble (mAnalogNorm);
 	streamer.writeDouble (mMixNorm);
 	streamer.writeDouble (mTrimNorm);
+	streamer.writeDouble (mModelNorm);
 	streamer.writeBool (mAutoMakeup);
 	streamer.writeBool (mCompOff);
 	streamer.writeBool (mBypass);
@@ -501,6 +554,7 @@ tresult PLUGIN_API Glass76Processor::setState (IBStream* state)
 
 	double inputNorm = 0.0, outputNorm = 0.0, attackNorm = 0.0, releaseNorm = 0.0;
 	double ratioNorm = 0.0, meterNorm = 0.0, analogNorm = 0.0, mixNorm = 1.0, trimNorm = 0.5;
+	double modelNorm = stepToNormalized (kModelDefaultStep, kModelStepCount);
 	bool autoMakeup = false, compOff = false, bypass = false;
 
 	if (!streamer.readDouble (inputNorm))   return kResultFalse;
@@ -512,6 +566,12 @@ tresult PLUGIN_API Glass76Processor::setState (IBStream* state)
 	if (!streamer.readDouble (analogNorm))  return kResultFalse;
 	if (!streamer.readDouble (mixNorm))     return kResultFalse;
 	if (!streamer.readDouble (trimNorm))    return kResultFalse;
+	// v2: model, written right after trim. A version-1 stream ends here and
+	// defaults to Signature -- exactly what it already sounded like.
+	if (version >= 2)
+	{
+		if (!streamer.readDouble (modelNorm)) return kResultFalse;
+	}
 	if (!streamer.readBool (autoMakeup))    return kResultFalse;
 	if (!streamer.readBool (compOff))       return kResultFalse;
 	if (!streamer.readBool (bypass))        return kResultFalse;
@@ -525,6 +585,7 @@ tresult PLUGIN_API Glass76Processor::setState (IBStream* state)
 	mAnalogNorm = analogNorm;
 	mMixNorm = mixNorm;
 	mTrimNorm = trimNorm;
+	mModelNorm = modelNorm;
 	mAutoMakeup = autoMakeup;
 	mCompOff = compOff;
 	mBypass = bypass;
