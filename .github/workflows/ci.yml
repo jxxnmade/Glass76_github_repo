@@ -15,6 +15,11 @@ jobs:
   windows:
     runs-on: windows-latest
 
+    # GITHUB_TOKEN is read-only by default in repositories created since 2023,
+    # which is enough to build but makes the release step 403 on a tag push.
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
