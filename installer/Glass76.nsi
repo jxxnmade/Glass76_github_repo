@@ -36,7 +36,7 @@ ManifestDPIAware true
 !define PRODUCT       "Glass76"
 !define PUBLISHER     "Jaxson"
 !define DESCRIPTION   "1176-style FET compressor, VST 3"
-!define HOMEPAGE      "https://github.com/jxxn/glass76"
+!define HOMEPAGE      "https://github.com/jxxnmade/Glass76_github_repo"
 !define REGKEY        "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT}"
 !define SETTINGSKEY   "Software\${PUBLISHER}\${PRODUCT}"
 

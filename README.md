@@ -3,14 +3,43 @@
 A 1176-style FET compressor VST3 for FL Studio on Windows, with a macOS 27
 ("Liquid Glass") interface drawn from Apple's own UI kit metrics.
 
-```bash
-powershell -ExecutionPolicy Bypass -File "C:\Users\jaxson\.claude\skills\vst3-fl-studio\scripts\build.ps1" -ProjectDir "D:\_claude_custom_vst3\plugins\Glass76" -Validate -Install
+MIT licensed. Windows x64 only.
+
+![Glass76, light appearance](docs/images/editor-light.png)
+
+## Install
+
+Grab `Glass76-<version>-win64.exe` from the
+[latest release](https://github.com/jxxnmade/Glass76_github_repo/releases/latest) and run it. It
+installs to `C:\Program Files\Common Files\VST3\Glass76.vst3`, adds an entry to
+Apps & features, and uninstalls cleanly.
+
+The installer is **not code-signed**, so SmartScreen shows *"Windows protected
+your PC"* the first time. *More info* → *Run anyway*. Signing needs a
+certificate that costs money and is tied to a legal identity; this project has
+neither.
+
+In FL Studio: Options → Manage plugins → **Find installed plugins**, with
+*Rescan previously verified plugins* ticked.
+
+Prefer to drop the bundle in yourself? The release also carries
+`Glass76-vst3-bundle.zip` — unzip `Glass76.vst3` into any folder your host
+scans.
+
+## Build
+
+```powershell
+git clone https://github.com/jxxnmade/Glass76_github_repo
+cd glass76
+.\scripts\build.ps1 -FetchSdk -Validate -Test -Install
 ```
 
-Installs to `C:\Program Files\Common Files\VST3\Glass76.vst3`. In FL Studio:
-Options → Manage plugins → **Find installed plugins** with *Rescan previously
-verified plugins* ticked, and close FL before rebuilding — while it is open it
-holds the DLL and the install copy fails.
+`-FetchSdk` clones the VST 3 SDK (about 1 GB, once); drop it if you already
+have one. `-Install` needs an elevated shell. Full instructions, options and
+troubleshooting are in [docs/BUILDING.md](docs/BUILDING.md).
+
+Close FL Studio before rebuilding — while it is open it holds the DLL and the
+install copy fails.
 
 ## Controls
 
@@ -66,10 +95,11 @@ controller.
 
 ## The interface
 
-Targets **macOS 27**, not Aqua. Every value is traced to `references/macos-27.md`
-in the `macos-ui-on-windows` skill, which is measured from Apple's macOS 27 UI
-kit. The two systems disagree on window background, control sizes, radii,
-accent colour and label alphas, so none of the Aqua tables are used here.
+Targets **macOS 27**, not Aqua. Every value is traced to a measurement of
+Apple's published macOS 27 UI kit, and the tokens all live in
+`source/ui/theme.h`. The two systems disagree on window background, control
+sizes, radii, accent colour and label alphas, so none of the Aqua tables are
+used here.
 
 - White (`#FFFFFF`) / `#1E1E1E` window background, 12pt content inset, 52pt
   unified toolbar, group boxes at radius 12.
@@ -85,6 +115,8 @@ accent colour and label alphas, so none of the Aqua tables are used here.
   control families, so neither does this.
 - Light and dark, toggled from the appearance button in the toolbar and stored
   in the controller's own state (never exposed as an automatable parameter).
+
+![Glass76, dark appearance](docs/images/editor-dark.png)
 
 Two deliberate departures, both because a plug-in window is not a macOS window:
 
@@ -120,32 +152,60 @@ every metric while nothing errors.
 ## Layout
 
 ```
-source/params.h        parameter IDs, tables, and every plain<->normalized
-                       conversion, shared by processor and controller
-source/processor.*     the DSP. Feed-forward peak-sensing FET compressor
-source/controller.*    parameter definitions, state mirror, VST3EditorDelegate
-source/ui/theme.h      macOS 27 tokens, light and dark
-source/ui/macdraw.*    squircle paths, the glass edge stack, shadows, fonts
-source/ui/editor.*     RootView: the whole editor, laid out and painted
+source/params.h          parameter IDs, tables, and every plain<->normalized
+                         conversion, shared by processor and controller
+source/processor.*       the DSP. Feed-forward peak-sensing FET compressor
+source/controller.*      parameter definitions, state mirror, VST3EditorDelegate
+source/ui/theme.h        macOS 27 tokens, light and dark
+source/ui/macdraw.*      squircle paths, the glass edge stack, shadows, fonts
+source/ui/editor.*       RootView: the whole editor, laid out and painted
 resource/glass76.uidesc  a one-view template; RootView is substituted into it
-resource/Fonts/        Inter + Inter Display, shipped in the bundle
+resource/Fonts/          Inter + Inter Display, shipped in the bundle
 tools/offline_test.cpp   offline host that checks the DSP against the binary
+scripts/build.ps1        configure, build, validate, test, install
+installer/Glass76.nsi    the Windows installer
+docs/BUILDING.md         toolchain, SDK, CMake options, troubleshooting
 ```
+
+The VST 3 SDK is not vendored here — CMake locates or clones a checkout at
+build time. See [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Tests
 
 The SDK validator covers the plug-in contract; the offline host covers the DSP.
 
-```bash
-cmake -S . -B build -DGLASS76_BUILD_TESTS=ON && cmake --build build --config Release --target glass76_test
-build\bin\Release\glass76_test.exe build\VST3\Release\Glass76.vst3
+```powershell
+.\scripts\build.ps1 -Validate -Test
 ```
 
-Checks unity calibration, that 4:1 at 12 dB over threshold gives ~9 dB of
-reduction, that 20:1 reduces more, Comp Off, auto make-up, Mix at 0 %, Trim
+The offline host loads the *built bundle* rather than linking against the same
+sources, so a missing `.uidesc` or a font that did not get copied fails there
+too. It checks unity calibration, that 4:1 at 12 dB over threshold gives ~9 dB
+of reduction, that 20:1 reduces more, Comp Off, auto make-up, Mix at 0 %, Trim
 ±6 dB, the −∞ and 0 dB attenuator detents, the analog hum floor, and the meter
-round trip. Current status: **validator 47/47, offline host 15/15**, from a
-clean `rm -rf build` rebuild.
+round trip.
+
+Current status: **validator 47/47, offline host 17/17**, from a clean rebuild.
+CI runs both on every push.
 
 Not yet verified: behaviour inside FL Studio itself, and rendering at 125 % /
-150 % display scaling.
+150 % display scaling. Reports on either are welcome.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Two rules that matter more than style:
+the class IDs in `source/cids.h` never change, and nothing on the audio thread
+allocates, locks, or logs.
+
+## Licence
+
+Glass76 is MIT licensed — [LICENSE](LICENSE).
+
+It links the VST 3 SDK and VSTGUI, and ships the Inter typeface inside its
+bundle. Those carry their own terms, and binary redistributions have to
+reproduce two of them: see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md),
+which the installer copies alongside the plug-in.
+
+VST is a registered trademark of Steinberg Media Technologies GmbH. macOS and
+SF Pro are trademarks of Apple Inc. This project is affiliated with neither
+company, and contains no Apple code, artwork, or fonts.

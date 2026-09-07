@@ -52,9 +52,9 @@ First public release.
 
 ### Verified
 
-- SDK validator 47/47, offline DSP host 15/15, from a clean rebuild.
+- SDK validator 47/47, offline DSP host 17/17, from a clean rebuild.
 - Not yet verified: behaviour inside FL Studio itself, and rendering at 125 %
   and 150 % display scaling.
 
-[Unreleased]: https://github.com/jxxn/glass76/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/jxxn/glass76/releases/tag/v1.0.0
+[Unreleased]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/jxxnmade/Glass76_github_repo/releases/tag/v1.0.0

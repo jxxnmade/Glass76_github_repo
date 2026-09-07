@@ -13,6 +13,14 @@ option(SMTG_ENABLE_VST3_HOSTING_EXAMPLES "Enable VST 3 Hosting Examples" OFF)
 # The macOS 27 editor is drawn with VSTGUI, so this one stays ON.
 option(SMTG_ENABLE_VSTGUI_SUPPORT "Enable VSTGUI Support" ON)
 
+# The SDK defaults this ON, and it symlinks the built bundle into the user's
+# VST3 folder as a post-build step. Creating a symlink on Windows needs either
+# an elevated shell or Developer Mode, so with the default the build fails at
+# the very last step on an ordinary machine -- and on CI. Install with
+# scripts/build.ps1 -Install, or with the installer, instead. Turn it back ON
+# if you want the plug-in relinked on every build and can create symlinks.
+option(SMTG_CREATE_PLUGIN_LINK "Symlink the built plug-in into the user VST3 folder" OFF)
+
 #------------------------------------------------------------------------------
 # Locating the VST 3 SDK
 #

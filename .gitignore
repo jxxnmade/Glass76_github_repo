@@ -1,0 +1,25 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# The VST 3 SDK is cloned here, never committed. See docs/BUILDING.md.
+extern/
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+*.user
+*.suo
+*.sln
+*.vcxproj*
+CMakeSettings.json
+CMakeUserPresets.json
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Python bytecode from installer/assets/make_icon.py
+__pycache__/
+*.pyc

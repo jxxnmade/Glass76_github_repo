@@ -1,0 +1,93 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Keep in step with GLASS76_SDK_TAG in CMakeLists.txt.
+  SDK_TAG: v3.8.1_build_84
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The SDK is ~1 GB with submodules. Cloning it on every run would
+      # dominate the build time, so it is cached on the tag.
+      - name: Cache the VST 3 SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: extern/vst3sdk
+          key: vst3sdk-${{ env.SDK_TAG }}
+
+      - name: Clone the VST 3 SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: >
+          git clone --depth 1 --recurse-submodules --shallow-submodules
+          --branch ${{ env.SDK_TAG }}
+          https://github.com/steinbergmedia/vst3sdk.git extern/vst3sdk
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -A x64
+          -DGLASS76_BUILD_TESTS=ON
+          -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON
+
+      - name: Build the plug-in
+        run: cmake --build build --config Release --target Glass76
+
+      - name: Build the validator and the offline test host
+        run: |
+          cmake --build build --config Release --target validator
+          cmake --build build --config Release --target glass76_test
+
+      # Covers the plug-in contract: parameters, state, buses, the editor.
+      - name: Validator
+        run: build\bin\Release\validator.exe build\VST3\Release\Glass76.vst3
+
+      # Covers the DSP, against the built bundle rather than the sources, so
+      # packaging mistakes fail here too.
+      - name: Offline DSP tests
+        run: build\bin\Release\glass76_test.exe build\VST3\Release\Glass76.vst3
+
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
+
+      - name: Build the installer
+        run: |
+          $env:PATH += ';C:\Program Files (x86)\NSIS'
+          .\installer\build_installer.ps1
+        shell: pwsh
+
+      - name: Package the bare bundle
+        run: >
+          Compress-Archive -Path build\VST3\Release\Glass76.vst3
+          -DestinationPath build\installer\Glass76-vst3-bundle.zip
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Glass76-win64
+          path: build/installer/*
+          if-no-files-found: error
+
+      # Tag pushes get a draft release; the notes are written by hand from
+      # CHANGELOG.md before publishing.
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: build/installer/*
+          body: |
+            See [CHANGELOG.md](CHANGELOG.md).
+
+            **The installer is unsigned.** SmartScreen will warn on first run;
+            choose *More info* → *Run anyway*.
