@@ -5,7 +5,7 @@ A 1176-style FET compressor VST3 for FL Studio on Windows, with a macOS 27
 
 MIT licensed. Windows x64 only.
 
-![Glass76, light appearance](docs/images/editor-light.png)
+![Glass76, dark appearance](docs/images/editor-dark.png)
 
 ## Install
 
@@ -45,22 +45,38 @@ install copy fails.
 
 | # | Control | Type | Values |
 |---|---|---|---|
-| 1 | Input | 9-detent slider | −∞, −48, −36, −30, −24, −18, −12, −6, 0 dB |
-| 2 | Output | 9-detent slider | same |
-| 3 | Auto makeup | switch | on / off |
-| 4 | Attack | segmented | positions 1, 3, 5, 7 |
-| 5 | Release | segmented | positions 1, 3, 5, 7 |
-| 6 | Ratio | segmented | 20:1, 12:1, 8:1, 4:1, All |
-| 7 | Meter | segmented | GR, IN, OUT |
-| 8 | Comp Off | toolbar toggle | on / off |
-| 9 | Analog | segmented | 50 Hz, 60 Hz, Off |
-| 10 | Mix | slider | 0–100 % |
-| 11 | Trim | bipolar slider | −18…+18 dB |
+| 1 | Model | toolbar glass slider | Glass76 CLEAN / Glass76 Signature |
+| 2 | Input | 9-detent slider | −∞, −48, −36, −30, −24, −18, −12, −6, 0 dB |
+| 3 | Output | 9-detent slider | same |
+| 4 | Auto makeup | switch | on / off |
+| 5 | Attack | segmented | positions 1, 3, 5, 7 |
+| 6 | Release | segmented | positions 1, 3, 5, 7 |
+| 7 | Ratio | segmented | 20:1, 12:1, 8:1, 4:1, All |
+| 8 | Meter | segmented | GR, IN, OUT |
+| 9 | Comp Off | toolbar toggle | on / off |
+| 10 | Analog | segmented | 50 Hz, 60 Hz, Off (dims out under CLEAN) |
+| 11 | Mix | slider | 0–100 % |
+| 12 | Trim | bipolar slider | −18…+18 dB |
 
 Plus the VST3 `Bypass` parameter, which the host owns and draws itself, and
-three read-only meter parameters the processor uses to feed the gauge.
+three read-only meter parameters the processor uses to feed the gauge. The
+appearance toggle, the gear-icon Settings panel and its background image are
+UI-only state, mirrored in the controller so they survive a project reload,
+but are not automatable host parameters.
 
 ## Decisions worth knowing about
+
+**Glass76 CLEAN and Glass76 Signature are two different DSP paths, not a
+tone knob.** Signature is the unchanged, CLA-76-calibrated build: hardware
+drive on the attenuators, a FET saturation stage, a programme-dependent dual
+release, the All-buttons-in threshold/knee/drive quirks, and mains hum under
+Analog. CLEAN is mathematically transparent — the attenuator dB is applied
+exactly as printed, there is no saturation stage, release uses a single time
+constant, All-buttons-in behaves as plain 20:1, and Analog's hum stays off
+regardless of its switch position (the control dims to show it has no
+effect). The model is an automatable parameter, drawn as a glass slider in
+the toolbar; a project saved before this switch existed loads as Signature,
+so nothing already mixed changes sound.
 
 **Attack and Release are knob positions, not milliseconds.** The panel numbers
 1/3/5/7 are the positions printed on an 1176's stepped pots, and the plug-in
@@ -101,22 +117,41 @@ Apple's published macOS 27 UI kit, and the tokens all live in
 sizes, radii, accent colour and label alphas, so none of the Aqua tables are
 used here.
 
-- White (`#FFFFFF`) / `#1E1E1E` window background, 12pt content inset, 52pt
-  unified toolbar, group boxes at radius 12.
+- Warm beige/creme, not the cold Aqua blue: `#FAF6ED` / `#1E1C19` window
+  background, 12pt content inset, 52pt unified toolbar, group boxes at
+  radius 12.
 - Five size classes with radius = height ÷ 4; capsules for switches, sliders
   and the Lg segmented controls.
 - 0.6 corner smoothing as a superellipse above 8px radius — but **not** on
   capsules, whose ends are true semicircles.
-- Accent `#0088FF` / `#0091FF`, six label levels as alpha over the backdrop.
+- Accent `#B5884A` (light) / `#D6B280` (dark) — a tan/beige, not Aqua's blue —
+  on sliders, switches, the gauge arc and focus rings; six label levels as
+  alpha over the backdrop.
 - The Liquid Glass edge stack on every panel: dark inner bands top and bottom
   *before* the specular hairline, lateral edge lights with x-offsets, then the
   containment ring. Controls sitting on glass use the over-glass fill set.
 - Idle / Clicked / Disabled only. macOS 27 has no hover state for these
   control families, so neither does this.
-- Light and dark, toggled from the appearance button in the toolbar and stored
-  in the controller's own state (never exposed as an automatable parameter).
+- Light and dark, toggled from the appearance button in the toolbar and
+  stored in the controller's own state (never exposed as an automatable
+  parameter). **Dark is the default** on first launch.
 
-![Glass76, dark appearance](docs/images/editor-dark.png)
+![Glass76, light appearance](docs/images/editor-light.png)
+
+**Settings panel**, opened from the gear button next to the appearance
+toggle:
+
+- Pick an image file to show beneath the glass panels as the background,
+  persisted per-instance the same way the appearance preference is.
+- The accent family — sliders, switches, the gauge arc, focus rings — re-tints
+  to that image's own dominant hue: every sampled pixel votes for its hue in
+  direct proportion to its brightness, the votes are averaged as vectors on
+  the colour wheel (so reds either side of 0° don't cancel out to a bogus
+  cyan), and only the hue changes — saturation and value stay the kit's own,
+  so light/dark contrast is untouched. Recomputed from the file every time
+  rather than persisted, since it is deterministic from the same image.
+- A meter refresh-rate choice (30 / 60 / 120 Hz), and credits signed in the
+  interface's own script face.
 
 Two deliberate departures, both because a plug-in window is not a macOS window:
 
@@ -136,6 +171,12 @@ installed system-wide. `mac::Fonts::get()` resolves the text and display
 optical sizes separately -- Inter Display for 20px and up, Inter below -- and
 records what actually resolved, because a font that silently falls back breaks
 every metric while nothing errors.
+
+The "Glass76 Signature" wordmark uses **Allura**, a genuine script face
+bundled the same way and under the same OFL, rather than gambling on whichever
+cursive font happens to be installed -- it is first in the fallback chain,
+ahead of Segoe Script and the other system substitutes, so the signature
+renders identically on every machine.
 
 > **Upstream VSTGUI bug, worked around in `ui/macdraw.cpp`.** Bundled fonts do
 > not load in *any* VST3 plug-in as shipped. `setupVSTGUIBundleSupport()` passes
@@ -160,7 +201,7 @@ source/ui/theme.h        macOS 27 tokens, light and dark
 source/ui/macdraw.*      squircle paths, the glass edge stack, shadows, fonts
 source/ui/editor.*       RootView: the whole editor, laid out and painted
 resource/glass76.uidesc  a one-view template; RootView is substituted into it
-resource/Fonts/          Inter + Inter Display, shipped in the bundle
+resource/Fonts/          Inter, Inter Display + Allura, shipped in the bundle
 tools/offline_test.cpp   offline host that checks the DSP against the binary
 scripts/build.ps1        configure, build, validate, test, install
 installer/Glass76.nsi    the Windows installer
@@ -201,10 +242,11 @@ allocates, locks, or logs.
 
 Glass76 is MIT licensed — [LICENSE](LICENSE).
 
-It links the VST 3 SDK and VSTGUI, and ships the Inter typeface inside its
-bundle. Those carry their own terms, and binary redistributions have to
-reproduce two of them: see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md),
-which the installer copies alongside the plug-in.
+It links the VST 3 SDK and VSTGUI, and ships the Inter and Allura typefaces
+inside its bundle. Those carry their own terms, and binary redistributions
+have to reproduce three of them: see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), which the installer copies
+alongside the plug-in.
 
 VST is a registered trademark of Steinberg Media Technologies GmbH. macOS and
 SF Pro are trademarks of Apple Inc. This project is affiliated with neither

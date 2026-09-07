@@ -159,8 +159,11 @@ void Glass76Processor::updateDerived ()
 	}
 	else
 	{
-		mInputGain = dbToLinear (normalizedToAttenuatorDb (mInputNorm));
-		mOutputGain = dbToLinear (normalizedToAttenuatorDb (mOutputNorm));
+		// Same attenuator-plus-fixed-amp topology, just the flat, uncoloured
+		// make-up instead of the CLA-76 recalibration -- otherwise the -24 dB
+		// defaults attenuate by 48 dB net instead of sitting near unity.
+		mInputGain = dbToLinear (normalizedToAttenuatorDb (mInputNorm) + kCleanMakeupDb);
+		mOutputGain = dbToLinear (normalizedToAttenuatorDb (mOutputNorm) + kCleanMakeupDb);
 	}
 
 	const int ratioStep = normalizedToStep (mRatioNorm, kRatioStepCount);

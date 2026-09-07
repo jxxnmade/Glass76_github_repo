@@ -97,6 +97,23 @@ and cannot be embedded in a Windows binary. See the *Fonts* section of the
 
 ---
 
+## Allura
+
+The Allura Project Authors · https://github.com/googlefonts/allura
+**SIL Open Font License 1.1**
+
+Ships inside the plug-in bundle under `Contents/Resources/Fonts/`, together
+with the licence text as `Allura-LICENSE.txt`, the same way and for the same
+OFL reason as Inter above. The source is in
+[`resource/Fonts/`](resource/Fonts).
+
+Used for the "Glass76 Signature" wordmark, so the script face renders
+identically on every machine instead of falling back to whichever cursive
+system font happens to be installed. See the *Fonts* section of the
+[README](README.md).
+
+---
+
 ## Design reference
 
 The interface follows macOS 27 metrics measured from Apple's published UI kit.

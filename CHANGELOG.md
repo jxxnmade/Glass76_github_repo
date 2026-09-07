@@ -24,9 +24,9 @@ made with any version will always find the plug-in again.
 
 - The model switch is drawn as a glass slider in the top-left of the
   toolbar — "Glass76 CLEAN" in the interface's own bold text, "Glass76
-  Signature" in a cursive script face (Segoe Script, with a substitute chain
-  for machines that lack it, the same pattern `macdraw.cpp` already uses for
-  Inter/SF Pro).
+  Signature" in Allura, a bundled cursive script face (with a system-font
+  substitute chain for the unlikely case the bundle failed to load, the same
+  pattern `macdraw.cpp` already uses for Inter/SF Pro).
 - **Dark is now the default appearance** on first launch.
 - Warm beige/creme palette in both appearances, replacing the cold blue
   accent and white surfaces: sliders, switches, the gauge arc and focus rings
@@ -35,7 +35,10 @@ made with any version will always find the plug-in again.
 - **Settings panel**, opened from a new gear button in the toolbar: choose an
   image file to show beneath the glass panels as the background (persisted
   per-instance in controller state, same mechanism as the appearance
-  preference), and credits, signed in the script face.
+  preference), and credits, signed in the script face. The accent family —
+  sliders, switches, the gauge arc, focus rings — re-tints to the chosen
+  image's own dominant hue, computed as a brightness-weighted circular mean
+  rather than persisted, so it always matches the current picture.
 - The Analog control dims and stops responding to clicks while Glass76 CLEAN
   is selected, since it has no effect there.
 

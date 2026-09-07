@@ -66,6 +66,10 @@ public:
 	    fails silently and is retried the next time this is called. */
 	void setBackgroundImagePath (const std::string& path);
 
+	/** UI redraw rate: 30, 60 or 120 Hz. Restarts the animation timer if it
+	    is already running. Anything else snaps to 30. */
+	void setRefreshRateHz (int hz);
+
 	//--- CView ----------------------------------------------------------
 	void draw (VSTGUI::CDrawContext* context) override;
 	bool attached (VSTGUI::CView* parent) override;
@@ -107,6 +111,7 @@ private:
 		std::vector<std::string> labels;
 		int step {0};
 		bool capsule {true};
+		double shownStep {0.0};   // eased toward step each timer tick, for the chip glide
 	};
 
 	struct Slider
@@ -118,6 +123,7 @@ private:
 		bool bipolar {false};     // fill from the centre instead of the left
 		double norm {0.0};
 		double defaultNorm {0.0};
+		double shownNorm {0.0};   // eased toward norm each timer tick, for animation
 	};
 
 	struct Switch
@@ -125,6 +131,7 @@ private:
 		VSTGUI::CRect r;
 		Steinberg::Vst::ParamID id {0};
 		bool on {false};
+		double shownOn {0.0};     // eased toward on ? 1 : 0 each timer tick
 	};
 
 	struct Pill
@@ -133,13 +140,17 @@ private:
 		Steinberg::Vst::ParamID id {0};
 		std::string label;
 		bool on {false};
+		double shownOn {0.0};     // eased toward on ? 1 : 0 each timer tick
 	};
 
 	//--- construction ---------------------------------------------------
 	void buildLayout ();
 
 	//--- drawing --------------------------------------------------------
-	const mac::Theme& theme () const;
+	// Returned by value: when a background image supplies an accent hue
+	// (see mHasImageAccent) the accent family is re-tinted on the fly, so
+	// there is no single cached instance to hand back a reference to.
+	mac::Theme theme () const;
 	void invalidateChrome ();
 	void drawChrome (VSTGUI::CDrawContext* context);
 	void ensureChrome (VSTGUI::CDrawContext* context);
@@ -159,6 +170,7 @@ private:
 	void closeSettings ();
 	void chooseBackgroundImage ();
 	void clearBackgroundImage ();
+	void startTimer ();
 
 	//--- value formatting ------------------------------------------------
 	std::string gainStepText (Steinberg::Vst::ParamID id) const;
@@ -199,9 +211,18 @@ private:
 	VSTGUI::CRect mSettingsChooseRect;
 	VSTGUI::CRect mSettingsClearRect;
 	VSTGUI::CRect mSettingsCloseRect;
+	VSTGUI::CRect mSettingsRateRect[3];   // 30 / 60 / 120 Hz
+	int mRefreshRateHz {30};
 	std::string mBackgroundImagePath;
 	VSTGUI::SharedPointer<VSTGUI::CBitmap> mBackgroundImage;
 	int mChromeBgToken {0};       // bumped whenever the background image changes
+
+	// The accent colour (sliders, switches, gauge arc) re-tinted to the
+	// background image's dominant, brightness-weighted hue. Recomputed
+	// whenever a new image is chosen; falls back to the default beige when
+	// there is no image.
+	bool mHasImageAccent {false};
+	double mAccentHueDeg {0.0};
 	int mChromeBgTokenCached {-1};
 
 	// Value readout column, one per row that has one.

@@ -268,12 +268,10 @@ struct Fonts
 	VSTGUI::SharedPointer<VSTGUI::CFontDesc> subheadEmph; // 11 emphasized
 	VSTGUI::SharedPointer<VSTGUI::CFontDesc> caption;     // 10 regular
 
-	/** The fancy cursive wordmark for "Glass76 Signature". A genuine script
-	    typeface, not an italic body face -- see macdraw.cpp for the
-	    substitute chain, since none of the licensed script faces (Segoe
-	    Script and the rest) can ship inside the plug-in bundle. */
+	/** The cursive wordmark for "Glass76 Signature". Allura (SIL OFL),
+	    bundled in resource/Fonts the same way Inter is -- see macdraw.cpp
+	    for the substitute chain used if it somehow fails to load. */
 	VSTGUI::SharedPointer<VSTGUI::CFontDesc> signature;      // 17, model switch
-	VSTGUI::SharedPointer<VSTGUI::CFontDesc> signatureSmall; // 15, settings credits
 
 	/** What actually resolved, for the start-up check. A font that fails
 	    to load and silently falls back breaks every metric while nothing

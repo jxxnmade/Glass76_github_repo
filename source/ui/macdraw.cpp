@@ -7,6 +7,7 @@
 #include "vstgui/lib/platform/platformfactory.h"
 #include "vstgui/lib/platform/win32/win32factory.h"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -263,6 +264,80 @@ CCoord textWidth (CDrawContext* context, UTF8StringPtr text, const CFontRef font
 }
 
 //------------------------------------------------------------------------
+void rgbToHsv (uint8_t r, uint8_t g, uint8_t b, double& h, double& s, double& v)
+{
+	const double rf = r / 255.0, gf = g / 255.0, bf = b / 255.0;
+	const double maxc = std::max ({rf, gf, bf});
+	const double minc = std::min ({rf, gf, bf});
+	const double delta = maxc - minc;
+
+	v = maxc;
+	s = maxc <= 0.0 ? 0.0 : delta / maxc;
+
+	if (delta <= 1e-9)
+	{
+		h = 0.0;
+		return;
+	}
+
+	if (maxc == rf)
+		h = 60.0 * std::fmod ((gf - bf) / delta, 6.0);
+	else if (maxc == gf)
+		h = 60.0 * (((bf - rf) / delta) + 2.0);
+	else
+		h = 60.0 * (((rf - gf) / delta) + 4.0);
+
+	if (h < 0.0)
+		h += 360.0;
+}
+
+//------------------------------------------------------------------------
+namespace {
+
+CColor hsvToRgb (double h, double s, double v, uint8_t alpha)
+{
+	h = std::fmod (h, 360.0);
+	if (h < 0.0)
+		h += 360.0;
+	s = std::clamp (s, 0.0, 1.0);
+	v = std::clamp (v, 0.0, 1.0);
+
+	const double c = v * s;
+	const double x = c * (1.0 - std::fabs (std::fmod (h / 60.0, 2.0) - 1.0));
+	const double m = v - c;
+
+	double rf = 0, gf = 0, bf = 0;
+	if (h < 60.0)       { rf = c; gf = x; bf = 0; }
+	else if (h < 120.0) { rf = x; gf = c; bf = 0; }
+	else if (h < 180.0) { rf = 0; gf = c; bf = x; }
+	else if (h < 240.0) { rf = 0; gf = x; bf = c; }
+	else if (h < 300.0) { rf = x; gf = 0; bf = c; }
+	else                { rf = c; gf = 0; bf = x; }
+
+	auto to255 = [] (double f) { return static_cast<uint8_t> ((f + 0.0) * 255.0 + 0.5); };
+	return CColor (to255 (rf + m), to255 (gf + m), to255 (bf + m), alpha);
+}
+
+} // anonymous namespace
+
+//------------------------------------------------------------------------
+CColor withHue (const CColor& c, double hueDeg)
+{
+	double h = 0.0, s = 0.0, v = 0.0;
+	rgbToHsv (c.red, c.green, c.blue, h, s, v);
+	return hsvToRgb (hueDeg, s, v, c.alpha);
+}
+
+//------------------------------------------------------------------------
+void applyAccentHue (Theme& t, double hueDeg)
+{
+	t.accent = withHue (t.accent, hueDeg);
+	t.accentPressed = withHue (t.accentPressed, hueDeg);
+	t.focusRingOuter = withHue (t.focusRingOuter, hueDeg);
+	t.focusRingInner = withHue (t.focusRingInner, hueDeg);
+}
+
+//------------------------------------------------------------------------
 // Font resolution.
 //
 // SF Pro cannot ship in a Windows binary, so we walk a substitute chain.
@@ -326,13 +401,13 @@ const Fonts& Fonts::get ()
 		const char* displayFamily = firstAvailable (
 		    {"Inter Display", "Inter", "SF Pro Display", "Segoe UI Variable Display",
 		     "Segoe UI Variable", "Segoe UI"});
-		// A genuine script face for the "Glass76 Signature" wordmark. These
-		// are Microsoft/foundry-licensed system fonts, not something this
-		// plug-in can bundle the way Inter is bundled, so it is a pure
-		// substitute chain -- Segoe Script ships with Windows itself and is
-		// the most likely to actually be present.
+		// A genuine script face for the "Glass76 Signature" wordmark. Allura
+		// (SIL OFL) ships in resource/Fonts alongside Inter, so it is the
+		// first choice everywhere rather than a Windows system-font gamble;
+		// the rest of the chain is the fallback for a bundle that somehow
+		// failed to load (see the D2DFont resource-path workaround above).
 		const char* signatureFamily = firstAvailable (
-		    {"Segoe Script", "Brush Script MT", "Lucida Handwriting",
+		    {"Allura", "Segoe Script", "Brush Script MT", "Lucida Handwriting",
 		     "Monotype Corsiva", "Segoe Print"});
 
 		Fonts f;
@@ -340,18 +415,29 @@ const Fonts& Fonts::get ()
 		f.displayFamily = displayFamily;
 		f.usingInter = (std::string (textFamily).rfind ("Inter", 0) == 0);
 
-		f.largeTitle = owned (new CFontDesc (displayFamily, 26, kNormalFace));
-		f.title1 = owned (new CFontDesc (displayFamily, 22, kNormalFace));
-		f.title3 = owned (new CFontDesc (textFamily, 15, kNormalFace));
-		f.headline = owned (new CFontDesc (textFamily, 13, kBoldFace));
-		f.body = owned (new CFontDesc (textFamily, 13, kNormalFace));
-		f.bodyEmph = owned (new CFontDesc (textFamily, 13, kBoldFace));
-		f.callout = owned (new CFontDesc (textFamily, 12, kNormalFace));
-		f.subhead = owned (new CFontDesc (textFamily, 11, kNormalFace));
-		f.subheadEmph = owned (new CFontDesc (textFamily, 11, kBoldFace));
-		f.caption = owned (new CFontDesc (textFamily, 10, kNormalFace));
+		// Inter's vertical metrics (cap-height, x-height, ascent/descent) run
+		// noticeably taller than SF Pro's at the same nominal point size --
+		// it is a well-known substitution mismatch, not a rendering bug --
+		// so every macOS-27 metric in this file (control heights, row
+		// spacing) reads as if the text were stretched to fill boxes sized
+		// for the shorter face. Sizing Inter down by ~10% brings its optical
+		// size back in line with what those metrics assume. Segoe UI's
+		// fallback metrics are close enough to SF Pro's that it needs none
+		// of this.
+		const double sizeScale = f.usingInter ? 0.90 : 1.0;
+		auto pt = [sizeScale] (double size) { return size * sizeScale; };
+
+		f.largeTitle = owned (new CFontDesc (displayFamily, pt (26), kNormalFace));
+		f.title1 = owned (new CFontDesc (displayFamily, pt (22), kNormalFace));
+		f.title3 = owned (new CFontDesc (textFamily, pt (15), kNormalFace));
+		f.headline = owned (new CFontDesc (textFamily, pt (13), kBoldFace));
+		f.body = owned (new CFontDesc (textFamily, pt (13), kNormalFace));
+		f.bodyEmph = owned (new CFontDesc (textFamily, pt (13), kBoldFace));
+		f.callout = owned (new CFontDesc (textFamily, pt (12), kNormalFace));
+		f.subhead = owned (new CFontDesc (textFamily, pt (11), kNormalFace));
+		f.subheadEmph = owned (new CFontDesc (textFamily, pt (11), kBoldFace));
+		f.caption = owned (new CFontDesc (textFamily, pt (10), kNormalFace));
 		f.signature = owned (new CFontDesc (signatureFamily, 17, kNormalFace));
-		f.signatureSmall = owned (new CFontDesc (signatureFamily, 15, kNormalFace));
 		return f;
 	}();
 

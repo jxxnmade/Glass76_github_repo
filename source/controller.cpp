@@ -381,10 +381,11 @@ void Glass76Controller::changeContinuous (ParamID id, double normalized)
 }
 
 //------------------------------------------------------------------------
-// Controller-only state: the light/dark preference and the background
-// image path. Versioned separately from the processor state so the two can
-// evolve independently. The background image path was added after ship;
-// a stream that ends after appearance (an older save) just leaves it empty.
+// Controller-only state: the light/dark preference, the background image
+// path, and the UI refresh rate. Versioned separately from the processor
+// state so the two can evolve independently. The image path and refresh
+// rate were both added after ship; a stream that ends early (an older save)
+// just leaves the rest at their defaults.
 //------------------------------------------------------------------------
 tresult PLUGIN_API Glass76Controller::setState (IBStream* state)
 {
@@ -412,6 +413,16 @@ tresult PLUGIN_API Glass76Controller::setState (IBStream* state)
 		}
 	}
 
+	// Added after ship, same as the background image path -- a stream that
+	// ends here (an older save) just keeps the 30 Hz default.
+	int32 refreshRateHz = 0;
+	if (streamer.readInt32 (refreshRateHz))
+	{
+		setRefreshRateHz (refreshRateHz);
+		if (mRoot)
+			mRoot->setRefreshRateHz (mRefreshRateHz);
+	}
+
 	return kResultTrue;
 }
 
@@ -427,6 +438,7 @@ tresult PLUGIN_API Glass76Controller::getState (IBStream* state)
 	if (!mBackgroundImagePath.empty ())
 		streamer.writeRaw (mBackgroundImagePath.data (),
 		                   static_cast<int32> (mBackgroundImagePath.size ()));
+	streamer.writeInt32 (mRefreshRateHz);
 	return kResultTrue;
 }
 
@@ -457,6 +469,7 @@ VSTGUI::CView* Glass76Controller::createCustomView (VSTGUI::UTF8StringPtr name,
 		root->setAppearance (mAppearance);
 		if (!mBackgroundImagePath.empty ())
 			root->setBackgroundImagePath (mBackgroundImagePath);
+		root->setRefreshRateHz (mRefreshRateHz);
 
 		// Seed the view with the values the host already has, so it opens
 		// showing the real state rather than the defaults.

@@ -128,6 +128,14 @@ static constexpr double kInputMakeupDb = 34.85;
 static constexpr double kOutputMakeupDb = 21.29;
 static constexpr double kThresholdDb = -18.0;
 
+// CLEAN keeps the same attenuator-plus-fixed-amp topology as the hardware --
+// it just skips the CLA-76-specific recalibration above, the saturation, and
+// every other bit of character. Without a fixed make-up stage at all, its
+// -24 dB detents would attenuate by 48 dB net, which is not "transparent",
+// just quiet. The original symmetric 24/24 (see the comment above) is the
+// flat, uncoloured version of the same amplifier stage.
+static constexpr double kCleanMakeupDb = 24.0;
+
 //------------------------------------------------------------------------
 // Meter encoding. Normalized 0..1 on the wire, plain units at both ends.
 //------------------------------------------------------------------------

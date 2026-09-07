@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 
 using namespace Steinberg;
@@ -95,6 +96,77 @@ void chipShadow (CDrawContext* context, const CRect& r, CCoord radius, const CCo
 	}
 }
 
+/** The image's dominant colour, as a brightness-weighted circular mean of
+    every sampled pixel's hue: a pixel's vote counts in direct proportion to
+    its brightness (channel value 255 counts 255x as much as value 1), and
+    hues are averaged as vectors on the colour wheel so a mix of just-below-
+    and just-above-0-degrees reds does not cancel out to a bogus cyan.
+
+    A big upload is sampled on a grid rather than pixel-by-pixel -- the user
+    explicitly doesn't need full-resolution precision for a single dominant
+    colour, and it keeps this off the UI thread's critical path negligible
+    even for a multi-megapixel photo. Returns false if the image has no
+    bitmap or is fully transparent/black. */
+bool computeAccentHueFromImage (VSTGUI::CBitmap* bitmap, double& outHueDeg)
+{
+	if (!bitmap)
+		return false;
+
+	auto access = VSTGUI::owned (VSTGUI::CBitmapPixelAccess::create (bitmap));
+	if (!access)
+		return false;
+
+	const uint32_t w = access->getBitmapWidth ();
+	const uint32_t h = access->getBitmapHeight ();
+	if (w == 0 || h == 0)
+		return false;
+
+	// Downscale purely for this analysis by sampling on a grid capped at
+	// roughly 128 samples per axis -- plenty to find the dominant hue,
+	// nowhere near enough to matter for wall-clock time.
+	constexpr uint32_t kMaxSamplesPerAxis = 128;
+	const uint32_t strideX = std::max<uint32_t> (1, w / kMaxSamplesPerAxis);
+	const uint32_t strideY = std::max<uint32_t> (1, h / kMaxSamplesPerAxis);
+
+	double sumX = 0.0, sumY = 0.0, sumWeight = 0.0;
+	VSTGUI::CColor c;
+	for (uint32_t y = 0; y < h; y += strideY)
+	{
+		for (uint32_t x = 0; x < w; x += strideX)
+		{
+			access->setPosition (x, y);
+			access->getColor (c);
+			if (c.alpha < 8)
+				continue;   // fully transparent pixels carry no colour
+
+			// Brightness = the pixel's HSV value channel, i.e. its brightest
+			// component -- a fully-on red (255,0,0) weighs 255x a barely-on
+			// blue (0,0,1), exactly as specified.
+			const double weight =
+			    static_cast<double> (std::max ({c.red, c.green, c.blue}));
+			if (weight <= 0.0)
+				continue;
+
+			double hue, sat, val;
+			mac::rgbToHsv (c.red, c.green, c.blue, hue, sat, val);
+
+			const double rad = hue * (3.14159265358979323846 / 180.0);
+			sumX += weight * std::cos (rad);
+			sumY += weight * std::sin (rad);
+			sumWeight += weight;
+		}
+	}
+
+	if (sumWeight <= 0.0)
+		return false;
+
+	double meanHue = std::atan2 (sumY, sumX) * (180.0 / 3.14159265358979323846);
+	if (meanHue < 0.0)
+		meanHue += 360.0;
+	outHueDeg = meanHue;
+	return true;
+}
+
 } // anonymous namespace
 
 //========================================================================
@@ -106,6 +178,13 @@ RootView::RootView (Glass76Controller* owner, const CRect& size)
 	setMouseEnabled (true);
 	setTransparency (false);
 	buildLayout ();
+
+	// Seed the animated "shown" values from the targets buildLayout just set
+	// so the first frame is drawn at rest, not gliding in from zero.
+	for (auto& sl : mSliders)   sl.shownNorm = sl.norm;
+	for (auto& sw : mSwitches)  sw.shownOn = sw.on ? 1.0 : 0.0;
+	for (auto& p : mPills)      p.shownOn = p.on ? 1.0 : 0.0;
+	for (auto& seg : mSegments) seg.shownStep = static_cast<double> (seg.step);
 }
 
 //------------------------------------------------------------------------
@@ -151,8 +230,11 @@ void RootView::buildLayout ()
 	// Toolbar leading edge: the glass model slider. It doubles as the
 	// wordmark -- "Glass76 CLEAN" or "Glass76 Signature" -- and as the
 	// control that switches the processor between the two. A Segmented
-	// like any other, drawn with its own fonts (see drawSegmented).
-	mSegments.push_back ({R (kInset, 12, kInset + 368, 40), kParamModelId,
+	// like any other, drawn with its own fonts (see drawSegmented). Narrower
+	// than the original 368: at that width each of the two chips read as an
+	// oversized button rather than a compact model switch.
+	constexpr CCoord kModelSwitchWidth = 300;
+	mSegments.push_back ({R (kInset, 12, kInset + kModelSwitchWidth, 40), kParamModelId,
 	                      {"Glass76 CLEAN", "Glass76 Signature"},
 	                      kModelDefaultStep, true});
 
@@ -288,7 +370,7 @@ void RootView::buildLayout ()
 
 	//--- settings overlay -----------------------------------------------
 	{
-		constexpr CCoord cardW = 380, cardH = 280;
+		constexpr CCoord cardW = 380, cardH = 364;
 		const CCoord cardL = kPanelWidth * 0.5 - cardW * 0.5;
 		const CCoord cardT = kPanelHeight * 0.5 - cardH * 0.5;
 		mSettingsCardRect = R (cardL, cardT, cardL + cardW, cardT + cardH);
@@ -297,6 +379,18 @@ void RootView::buildLayout ()
 		                         cardL + kCardPad + 168, cardT + 78 + 32);
 		mSettingsClearRect = R (cardL + kCardPad + 168 + 10, cardT + 78,
 		                        cardL + kCardPad + 168 + 10 + 84, cardT + 78 + 32);
+
+		// Refresh rate row: three equal pill buttons below the image path,
+		// same 8px gap the rest of the panel uses between grouped controls.
+		const CCoord rateTop = cardT + 191;
+		const CCoord rateGap = 8;
+		const CCoord rateW = (cardW - 2 * kCardPad - 2 * rateGap) / 3.0;
+		for (int i = 0; i < 3; i++)
+		{
+			const CCoord left = cardL + kCardPad + i * (rateW + rateGap);
+			mSettingsRateRect[i] = R (left, rateTop, left + rateW, rateTop + 32);
+		}
+
 		mSettingsCloseRect = R (cardL + cardW - kCardPad - 90, cardT + cardH - 16 - 32,
 		                        cardL + cardW - kCardPad, cardT + cardH - 16);
 	}
@@ -440,10 +534,23 @@ void RootView::setBackgroundImagePath (const std::string& path)
 {
 	mBackgroundImagePath = path;
 	mBackgroundImage = nullptr;
+	mHasImageAccent = false;
 	if (!path.empty ())
 	{
 		if (auto platformBmp = VSTGUI::getPlatformFactory ().createBitmapFromPath (path.c_str ()))
 			mBackgroundImage = VSTGUI::owned (new CBitmap (platformBmp));
+
+		// Recolour the accent family (sliders, switches, gauge arc) to the
+		// image's own dominant hue instead of the default beige. Recomputed
+		// from the image every time rather than persisted -- it is
+		// deterministic from the same file, so there is nothing worth
+		// saving in the controller's state stream.
+		double hue = 0.0;
+		if (mBackgroundImage && computeAccentHueFromImage (mBackgroundImage, hue))
+		{
+			mAccentHueDeg = hue;
+			mHasImageAccent = true;
+		}
 	}
 
 	mChromeBgToken++;
@@ -463,12 +570,36 @@ bool RootView::attached (CView* parent)
 {
 	const bool result = CView::attached (parent);
 	if (result && !mTimer)
-	{
-		// 30 Hz. Fast enough that the gauge reads as continuous, slow
-		// enough that the editor costs nothing when nothing is playing.
-		mTimer = VSTGUI::owned (new CVSTGUITimer ([this] (CVSTGUITimer*) { onTimer (); }, 33, true));
-	}
+		startTimer ();
 	return result;
+}
+
+//------------------------------------------------------------------------
+// User-selectable redraw rate: 30 Hz (the original fixed rate -- fast
+// enough that the gauge reads as continuous, slow enough that the editor
+// costs nothing when nothing is playing), 60 or 120 for smoother motion on
+// higher refresh-rate displays.
+//------------------------------------------------------------------------
+void RootView::startTimer ()
+{
+	if (mTimer)
+		mTimer->stop ();
+	const int hz = (mRefreshRateHz == 60 || mRefreshRateHz == 120) ? mRefreshRateHz : 30;
+	const uint32_t intervalMs = std::max (1u, static_cast<uint32_t> (1000 / hz));
+	mTimer = VSTGUI::owned (new CVSTGUITimer ([this] (CVSTGUITimer*) { onTimer (); }, intervalMs, true));
+}
+
+//------------------------------------------------------------------------
+void RootView::setRefreshRateHz (int hz)
+{
+	if (hz != 30 && hz != 60 && hz != 120)
+		hz = 30;
+	if (mRefreshRateHz == hz)
+		return;
+	mRefreshRateHz = hz;
+	if (mTimer)
+		startTimer ();
+	invalid ();
 }
 
 //------------------------------------------------------------------------
@@ -484,8 +615,47 @@ bool RootView::removed (CView* parent)
 }
 
 //------------------------------------------------------------------------
+// Eases `shown` toward `target`, returning whether it moved. Knobs, switch
+// thumbs, pill fills and segmented chips all animate through this rather
+// than snapping straight to the new value on every parameter change --
+// without it, every automation write or click read as an instant jump cut.
+//------------------------------------------------------------------------
+namespace {
+bool easeToward (double& shown, double target, double rate)
+{
+	const double delta = target - shown;
+	if (std::fabs (delta) > 0.0005)
+	{
+		shown += delta * rate;
+		return true;
+	}
+	if (shown != target)
+	{
+		shown = target;
+		return true;
+	}
+	return false;
+}
+} // anonymous namespace
+
+//------------------------------------------------------------------------
 void RootView::onTimer ()
 {
+	// ~210ms to settle (6-7 ticks at 30Hz), which reads as a deliberate
+	// glide rather than either an instant snap or a sluggish drag.
+	constexpr double kControlEase = 0.45;
+	bool controlsChanged = false;
+	for (auto& sl : mSliders)
+		controlsChanged |= easeToward (sl.shownNorm, sl.norm, kControlEase);
+	for (auto& sw : mSwitches)
+		controlsChanged |= easeToward (sw.shownOn, sw.on ? 1.0 : 0.0, kControlEase);
+	for (auto& p : mPills)
+		controlsChanged |= easeToward (p.shownOn, p.on ? 1.0 : 0.0, kControlEase);
+	for (auto& seg : mSegments)
+		controlsChanged |= easeToward (seg.shownStep, static_cast<double> (seg.step), kControlEase);
+	if (controlsChanged)
+		invalid ();
+
 	const int mode = stepOf (kParamMeterId);
 	double target = 0.0;
 	switch (mode)
@@ -516,11 +686,15 @@ void RootView::onTimer ()
 //========================================================================
 // Drawing
 //========================================================================
-const mac::Theme& RootView::theme () const
+mac::Theme RootView::theme () const
 {
 	static const mac::Theme light = mac::makeLightTheme ();
 	static const mac::Theme dark = mac::makeDarkTheme ();
-	return mDark ? dark : light;
+
+	mac::Theme t = mDark ? dark : light;
+	if (mHasImageAccent)
+		mac::applyAccentHue (t, mAccentHueDeg);
+	return t;
 }
 
 //------------------------------------------------------------------------
@@ -595,22 +769,26 @@ void RootView::drawChrome (CDrawContext* context)
 		const CCoord bh = mBackgroundImage->getHeight ();
 		if (bw > 0 && bh > 0)
 		{
-			const double srcAspect = bw / bh;
-			const double dstAspect = view.getWidth () / view.getHeight ();
-			CRect src;
-			if (srcAspect > dstAspect)
-			{
-				const CCoord cw = bh * dstAspect;
-				const CCoord x = (bw - cw) * 0.5;
-				src = CRect (x, 0, x + cw, bh);
-			}
-			else
-			{
-				const CCoord ch = bw / dstAspect;
-				const CCoord y = (bh - ch) * 0.5;
-				src = CRect (0, y, bw, y + ch);
-			}
-			context->fillRectWithBitmap (mBackgroundImage, src, view, 1.0f);
+			// fillRectWithBitmap does not scale -- on the Direct2D backend it
+			// paints srcRect's own pixels 1:1 with WRAP tiling beyond that, so
+			// a source rect bigger than the view only ever shows its top-left
+			// corner and a smaller one repeats. Getting an actual "cover" fit
+			// (scaled to fill the view, centred, excess cropped) needs a real
+			// scale in the transform, so draw the whole bitmap through a
+			// scale+translate transform instead of pre-cropping a source rect.
+			const double scale =
+			    std::max (view.getWidth () / bw, view.getHeight () / bh);
+			const double drawnW = bw * scale;
+			const double drawnH = bh * scale;
+			const double offX = view.left + (view.getWidth () - drawnW) * 0.5;
+			const double offY = view.top + (view.getHeight () - drawnH) * 0.5;
+
+			ConcatClip clip (*context, view);
+			CGraphicsTransform fit;
+			fit.scale (scale, scale);
+			fit.translate (offX, offY);
+			CDrawContext::Transform t (*context, fit);
+			context->drawBitmap (mBackgroundImage, CRect (0, 0, bw, bh), CPoint (0, 0), 1.0f);
 		}
 
 		// A scrim in the window colour so text and glass edges keep reading
@@ -742,37 +920,64 @@ void RootView::drawSegmented (CDrawContext* context, const Segmented& seg) const
 	const CCoord segW = seg.r.getWidth () / static_cast<CCoord> (n);
 	const auto& fonts = mac::Fonts::get ();
 
+	// The chip glides continuously between cells on the timer-eased
+	// shownStep, rather than jumping straight from one integer index to the
+	// next -- the animated counterpart of the discrete AppKit chip.
+	{
+		const double shown = std::clamp (seg.shownStep, 0.0, static_cast<double> (n - 1));
+		CRect chip (seg.r.left + segW * shown, seg.r.top,
+		           seg.r.left + segW * (shown + 1.0), seg.r.bottom);
+		chip.inset (2.0, 2.0);
+		const CCoord chipRadius = mac::concentricRadius (radius, 2.0, chip.getHeight ());
+		if (!disabled)
+			chipShadow (context, chip, chipRadius, t.chipShadow);
+		mac::fillSquircle (context, chip, chipRadius, dimmed (t.chipFill));
+		mac::strokeSquircle (context, chip, chipRadius, dimmed (t.chipRing), 1.0);
+	}
+
 	for (int i = 0; i < n; i++)
 	{
 		CRect cell (seg.r.left + segW * i, seg.r.top,
 		            seg.r.left + segW * (i + 1), seg.r.bottom);
 
-		if (i == seg.step)
+		// Hairline between unselected segments, suppressed either side of
+		// the chip -- the same rule AppKit uses.
+		if (i > 0 && i != seg.step && i != seg.step + 1)
 		{
-			CRect chip (cell);
-			chip.inset (2.0, 2.0);
-			const CCoord chipRadius = mac::concentricRadius (radius, 2.0, chip.getHeight ());
-			if (!disabled)
-				chipShadow (context, chip, chipRadius, t.chipShadow);
-			mac::fillSquircle (context, chip, chipRadius, dimmed (t.chipFill));
-			mac::strokeSquircle (context, chip, chipRadius, dimmed (t.chipRing), 1.0);
-		}
-		else if (i > 0)
-		{
-			// Hairline between unselected segments, suppressed either side
-			// of the chip -- the same rule AppKit uses.
-			if (i != seg.step + 1)
-			{
-				CRect divider (cell.left, cell.top + 6, cell.left + 1, cell.bottom - 6);
-				context->setFillColor (dimmed (t.label4));
-				context->drawRect (divider, kDrawFilled);
-			}
+			CRect divider (cell.left, cell.top + 6, cell.left + 1, cell.bottom - 6);
+			context->setFillColor (dimmed (t.label4));
+			context->drawRect (divider, kDrawFilled);
 		}
 
-		const CFontRef font = isModelSwitch ? (i == 1 ? fonts.signature : fonts.headline)
-		                                    : fonts.body;
-		mac::drawText (context, seg.labels[i].c_str (), cell, kCenterText,
-		               font, dimmed (i == seg.step ? t.label1 : t.label2));
+		const CColor labelColor = dimmed (i == seg.step ? t.label1 : t.label2);
+
+		// "Glass76 Signature": only the "Signature" word is script -- "Glass76"
+		// stays in the same bold text every other label on the panel uses.
+		if (isModelSwitch && i == 1)
+		{
+			const std::string& label = seg.labels[i];
+			const size_t splitAt = label.find_last_of (' ');
+			const std::string head = splitAt == std::string::npos ? std::string ()
+			                                                       : label.substr (0, splitAt + 1);
+			const std::string tail = splitAt == std::string::npos ? label
+			                                                       : label.substr (splitAt + 1);
+
+			const CCoord headW = head.empty () ? 0.0 : mac::textWidth (context, head.c_str (), fonts.headline);
+			const CCoord tailW = mac::textWidth (context, tail.c_str (), fonts.signature);
+			const CCoord left = cell.left + (cell.getWidth () - (headW + tailW)) * 0.5;
+
+			if (!head.empty ())
+			{
+				CRect headRect (left, cell.top, left + headW, cell.bottom);
+				mac::drawText (context, head.c_str (), headRect, kLeftText, fonts.headline, labelColor);
+			}
+			CRect tailRect (left + headW, cell.top, left + headW + tailW, cell.bottom);
+			mac::drawText (context, tail.c_str (), tailRect, kLeftText, fonts.signature, labelColor);
+			continue;
+		}
+
+		const CFontRef font = isModelSwitch ? fonts.headline : fonts.body;
+		mac::drawText (context, seg.labels[i].c_str (), cell, kCenterText, font, labelColor);
 	}
 }
 
@@ -791,8 +996,13 @@ void RootView::drawSlider (CDrawContext* context, const Slider& sl) const
 
 	mac::fillSquircle (context, track, trackH * 0.5, t.fill1);
 
+	// Drawn from the timer-eased shownNorm, not the raw target norm, so a
+	// programmatic jump (automation, preset recall, double-click reset)
+	// glides instead of snapping. A live drag still tracks the pointer
+	// closely -- shownNorm is re-eased every 33ms, faster than it can fall
+	// visibly behind a mouse move.
 	const CCoord travel = sl.r.getWidth () - knobD;
-	const CCoord knobX = sl.r.left + knobD * 0.5 + travel * sl.norm;
+	const CCoord knobX = sl.r.left + knobD * 0.5 + travel * sl.shownNorm;
 
 	// Filled portion: from the left, or from the centre for a bipolar
 	// control like Trim, where the meaningful reference is zero.
@@ -850,17 +1060,21 @@ void RootView::drawSwitch (CDrawContext* context, const Switch& sw) const
 	const mac::Theme& t = theme ();
 	const CCoord radius = mac::capsuleFor (sw.r.getHeight ());
 
-	mac::fillSquircle (context, sw.r, radius, sw.on ? t.accent : t.fill1);
+	// shownOn (timer-eased toward on ? 1 : 0) drives both the thumb's slide
+	// and a cross-fade of the track fill, instead of the track colour and
+	// thumb position snapping the instant the parameter flips.
+	const double f = std::clamp (sw.shownOn, 0.0, 1.0);
+	mac::fillSquircle (context, sw.r, radius, mac::mixColor (t.fill1, t.accent, f));
 
 	const CCoord travel = sw.r.getWidth () - 4.0 - mac::kSwitchKnobWidth;
-	CRect knob (sw.r.left + 2.0 + (sw.on ? travel : 0.0), sw.r.top + 2.0, 0, 0);
+	CRect knob (sw.r.left + 2.0 + travel * f, sw.r.top + 2.0, 0, 0);
 	knob.setWidth (mac::kSwitchKnobWidth);
 	knob.setHeight (mac::kSwitchKnobHeight);
 
 	const CCoord knobRadius = mac::capsuleFor (knob.getHeight ());
 	chipShadow (context, knob, knobRadius, t.chipShadow);
 	mac::fillSquircle (context, knob, knobRadius,
-	                   mac::rgba (255, 255, 255, sw.on ? 1.0 : 0.98));
+	                   mac::rgba (255, 255, 255, 0.98 + 0.02 * f));
 	mac::strokeSquircle (context, knob, knobRadius, t.chipRing, 1.0);
 }
 
@@ -873,12 +1087,12 @@ void RootView::drawPill (CDrawContext* context, const Pill& pill) const
 	const mac::Theme& t = theme ();
 	const CCoord radius = mac::capsuleFor (pill.r.getHeight ());
 
-	mac::fillSquircle (context, pill.r, radius, pill.on ? t.accent : t.overGlassIdle);
-	if (!pill.on)
-		mac::strokeSquircle (context, pill.r, radius, t.chipRing, 1.0);
+	const double f = std::clamp (pill.shownOn, 0.0, 1.0);
+	mac::fillSquircle (context, pill.r, radius, mac::mixColor (t.overGlassIdle, t.accent, f));
+	mac::strokeSquircle (context, pill.r, radius, mac::withAlpha (t.chipRing, 1.0 - f), 1.0);
 
 	mac::drawText (context, pill.label.c_str (), pill.r, kCenterText,
-	               mac::Fonts::get ().body, pill.on ? t.accentGlyph : t.label1);
+	               mac::Fonts::get ().body, mac::mixColor (t.label1, t.accentGlyph, f));
 }
 
 //------------------------------------------------------------------------
@@ -1014,14 +1228,36 @@ void RootView::drawSettingsOverlay (CDrawContext* context) const
 	context->setFillColor (t.separator);
 	context->drawRect (sep, kDrawFilled);
 
-	// Credits: a plain label, then the name signed in the same script face
-	// as the Signature wordmark.
-	CRect creditsLabel (sep.left, sep.bottom + 10, sep.left + 60, sep.bottom + 32);
+	CRect rateLabel (sep.left, sep.bottom + 10, sep.left + 200, sep.bottom + 28);
+	mac::drawText (context, "Refresh rate", rateLabel, kLeftText, fonts.subhead, t.label2);
+
+	static constexpr int kRateChoices[3] = {30, 60, 120};
+	for (int i = 0; i < 3; i++)
+	{
+		const CRect& r = mSettingsRateRect[i];
+		const bool selected = (mRefreshRateHz == kRateChoices[i]);
+		const CCoord radius = mac::capsuleFor (r.getHeight ());
+		if (selected)
+			mac::fillSquircle (context, r, radius, t.accent);
+		else
+			mac::strokeSquircle (context, r, radius, t.chipRing, 1.0);
+		mac::drawText (context, fmt ("%d Hz", kRateChoices[i]).c_str (), r, kCenterText,
+		              fonts.body, selected ? t.accentGlyph : t.label1);
+	}
+
+	CRect sep2 (mSettingsCardRect.left + kCardPad, mSettingsRateRect[0].bottom + 16,
+	           mSettingsCardRect.right - kCardPad, mSettingsRateRect[0].bottom + 17);
+	context->setFillColor (t.separator);
+	context->drawRect (sep2, kDrawFilled);
+
+	// Credits: a plain label, then the handle in the same body face as the
+	// rest of the panel -- no script face here, it is a name, not a signature.
+	CRect creditsLabel (sep2.left, sep2.bottom + 10, sep2.left + 60, sep2.bottom + 32);
 	mac::drawText (context, "Credits", creditsLabel, kLeftText, fonts.subhead, t.label2);
 
-	CRect creditsName (creditsLabel.right + 6, sep.bottom + 2,
-	                   mSettingsCardRect.right - kCardPad, sep.bottom + 36);
-	mac::drawText (context, "jxxnmade", creditsName, kLeftText, fonts.signatureSmall, t.label1);
+	CRect creditsName (creditsLabel.right + 6, sep2.bottom + 2,
+	                   mSettingsCardRect.right - kCardPad, sep2.bottom + 36);
+	mac::drawText (context, "@jxxnmade on Instagram", creditsName, kLeftText, fonts.body, t.label1);
 
 	// Done.
 	{
@@ -1292,6 +1528,18 @@ CMouseEventResult RootView::onMouseDown (CPoint& where, const CButtonState& butt
 		{
 			clearBackgroundImage ();
 			return kMouseEventHandled;
+		}
+		{
+			static constexpr int kRateChoices[3] = {30, 60, 120};
+			for (int i = 0; i < 3; i++)
+			{
+				if (hit (mSettingsRateRect[i], where))
+				{
+					mController->setRefreshRateHz (kRateChoices[i]);
+					setRefreshRateHz (kRateChoices[i]);
+					return kMouseEventHandled;
+				}
+			}
 		}
 		if (!hit (mSettingsCardRect, where))
 			closeSettings ();   // click on the scrim dismisses the panel

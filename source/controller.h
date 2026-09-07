@@ -84,6 +84,14 @@ public:
 	const std::string& getBackgroundImagePath () const { return mBackgroundImagePath; }
 	void setBackgroundImagePath (const std::string& path) { mBackgroundImagePath = path; }
 
+	/** UI redraw rate in Hz: 30, 60 or 120. Same story as appearance -- a UI
+	    preference in the controller's own state, not a parameter. */
+	int getRefreshRateHz () const { return mRefreshRateHz; }
+	void setRefreshRateHz (int hz)
+	{
+		mRefreshRateHz = (hz == 60 || hz == 120) ? hz : 30;
+	}
+
 	//--- Interface ------------------------------------------------------
 	DEFINE_INTERFACES
 	END_DEFINE_INTERFACES (EditController)
@@ -93,6 +101,7 @@ private:
 	RootView* mRoot {nullptr};
 	int mAppearance {1};   // dark by default
 	std::string mBackgroundImagePath;
+	int mRefreshRateHz {30};
 };
 
 //------------------------------------------------------------------------

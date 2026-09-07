@@ -187,6 +187,28 @@ if(GLASS76_BUILD_TESTS)
     add_dependencies(glass76_test Glass76)
 endif()
 
+# Throwaway headless renderer for eyeballing RootView changes without a host
+# -- see tools/ui_snapshot.cpp. Not part of the shipped plug-in.
+option(GLASS76_BUILD_UI_SNAPSHOT "Build the offline UI snapshot tool" OFF)
+if(GLASS76_BUILD_UI_SNAPSHOT)
+    add_executable(glass76_ui_snapshot
+        tools/ui_snapshot.cpp
+        source/cids.h
+        source/params.h
+        source/controller.h
+        source/controller.cpp
+        source/ui/theme.h
+        source/ui/macdraw.h
+        source/ui/macdraw.cpp
+        source/ui/editor.h
+        source/ui/editor.cpp
+    )
+    target_link_libraries(glass76_ui_snapshot PRIVATE sdk vstgui_support)
+    set_target_properties(glass76_ui_snapshot PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
+endif()
+
 if(SMTG_WIN)
     target_sources(Glass76 PRIVATE
         resource/win32resource.rc
