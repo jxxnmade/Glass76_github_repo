@@ -6,7 +6,7 @@ made with any version will always find the plug-in again.
 
 ## [Unreleased]
 
-## [1.2.0] — 2026-09-07
+## [1.1.0] — 2026-09-07
 
 ### Plug-in
 
@@ -102,6 +102,6 @@ First public release.
 - Not yet verified: behaviour inside FL Studio itself, and rendering at 125 %
   and 150 % display scaling.
 
-[Unreleased]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.2.0...HEAD
-[1.2.0]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.0.0...v1.2.0
+[Unreleased]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jxxnmade/Glass76_github_repo/releases/tag/v1.0.0
