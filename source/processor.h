@@ -18,9 +18,12 @@ namespace Jaxson {
 //
 // Topology: a feed-forward peak-sensing FET compressor with a fixed
 // threshold, stepped attenuators either side of it, program-dependent
-// release, and a soft-clipping output stage whose drive tracks gain
-// reduction. That last part is what makes it sound like an 1176 rather
-// than like a clean compressor.
+// release, and a soft-clipping output stage whose drive tracks the
+// pre-gain-reduction signal level. That last part -- plus the sidechain
+// conditioning and the asymmetric saturator -- is what makes Signature
+// sound like an 1176 rather than like a clean compressor; CLEAN skips
+// all of it. See SWEEP_ANALYSIS.md for the CLA-76 calibration this was
+// tuned against.
 //------------------------------------------------------------------------
 class Glass76Processor : public Steinberg::Vst::AudioEffect
 {
@@ -125,6 +128,15 @@ protected:
 	double mDcState[2] {0.0, 0.0};
 	double mDcPrevIn[2] {0.0, 0.0};
 	uint32_t mNoiseSeed {0x9E3779B9u};
+
+	// Sidechain conditioning ahead of Signature's gain computer -- see
+	// updateDerived / processAudio. CLEAN's detector stays raw and
+	// instantaneous, so it does not use any of this.
+	double mDetHpState[2] {0.0, 0.0};
+	double mDetHpPrevIn[2] {0.0, 0.0};
+	double mDetSmooth {0.0};
+	double mDetHpCoef {0.0};
+	double mDetSmoothCoef {0.0};
 
 	//--- meter ballistics ------------------------------------------------
 	// IN and OUT are VU: a running mean-square with a 300 ms time constant,

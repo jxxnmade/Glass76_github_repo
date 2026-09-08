@@ -49,13 +49,26 @@ enum Glass76ParamID : Steinberg::Vst::ParamID
 // Stepped value tables. Index 0 is always the first entry.
 //------------------------------------------------------------------------
 
-/** Input / output attenuator detents, in dB. kGainMinusInfDb means silence. */
+/** Input / output attenuator detents, in dB. kGainMinusInfDb means silence.
+    Marks 1 and 4 (previously the uniform -48 / -24) were corrected in
+    2026-09-07 from a joint nonlinear fit of the real CLA-76's gain law,
+    reconstructed from the sweep-tester audio in SWEEP_ANALYSIS.md -- see
+    "Finding 7" there for the method and its validation against Glass76
+    CLEAN's own (exactly known) table. Marks 5-7 are left at their old
+    uniform values: the same reconstruction shows the real CLA-76 compresses
+    harder than its nominal 20:1 ratio at that much drive, which a taper
+    table alone cannot fix (needs the dedicated fixed-tone re-test in the
+    Plan there before touching those marks). Marks 0, 2, 3 and 8 measured
+    unchanged from the previous table (3 sits at the README's -30.0 dB
+    reference anchor exactly). */
 static constexpr double kGainMinusInfDb = -1000.0;
 static constexpr int kGainStepCount = 9;
 static constexpr double kGainStepsDb[kGainStepCount] = {
-	kGainMinusInfDb, -48.0, -36.0, -30.0, -24.0, -18.0, -12.0, -6.0, 0.0
+	kGainMinusInfDb, -43.0, -36.0, -30.0, -19.5, -18.0, -12.0, -6.0, 0.0
 };
-/** Detent 4 (-24 dB) sits at unity once the fixed make-up below is added. */
+/** Detent 4 (-19.5 dB) is Glass76's default Input/Output position -- not a
+    literal unity point (see kInputMakeupDb/kOutputMakeupDb below for the
+    actual net static gain there). */
 static constexpr int kInputDefaultStep = 4;
 static constexpr int kOutputDefaultStep = 4;
 
@@ -194,11 +207,14 @@ inline double linearToDb (double lin)
 /** Normalized 0..1 -> attenuator dB, continuously.
 
     The nine printed marks sit on even eighths of the travel, with the dB
-    value interpolated linearly between them. That is not a guess: the
-    Waves CLA-76's own Input parameter is continuous and reads exactly
-    "-30.0 dB" at norm 0.375, which is mark index 3 of 8. Keeping the marks
-    on eighths also means every value a previous stepped build saved still
-    lands on the same dB it did before. */
+    value interpolated linearly between them. Keeping the marks on eighths
+    means every value a previous stepped build saved still lands on the same
+    dB it did before -- only the values at those eighths, in kGainStepsDb,
+    have moved as better measurements came in. The eighths were originally
+    all 6 dB apart; they no longer are (see kGainStepsDb's own comment). The
+    one anchor that is not a guess: the Waves CLA-76's own Input parameter is
+    continuous and reads exactly "-30.0 dB" at norm 0.375, mark index 3 of 8,
+    which is why that mark has never moved. */
 inline double normalizedToAttenuatorDb (double n)
 {
 	n = std::clamp (n, 0.0, 1.0);

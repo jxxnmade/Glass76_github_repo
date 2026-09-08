@@ -1068,8 +1068,9 @@ int main (int argc, char* argv[])
 			return 1;
 		const double gainDb = linearToDb (r.outPeak) - (-40.0);
 		// Calibrated against the CLA-76, not chosen: marks 4/4 give
-		// kInputMakeupDb + kOutputMakeupDb - 48 dB of static gain.
-		const double expected = kInputMakeupDb + kOutputMakeupDb - 48.0;
+		// kInputMakeupDb + kOutputMakeupDb + 2 * kGainStepsDb[4] of static gain.
+		const double expected =
+		    kInputMakeupDb + kOutputMakeupDb + 2.0 * kGainStepsDb[kInputDefaultStep];
 		check (std::fabs (gainDb - expected) < 0.5,
 		       "static gain at marks 4/4 matches the calibration",
 		       f2 (gainDb) + " dB, expected " + f2 (expected));
@@ -1081,11 +1082,12 @@ int main (int argc, char* argv[])
 	std::printf ("\nCompression\n");
 	{
 		// At input mark 4 the net drive into the detector is
-		// -24 + kInputMakeupDb. A -24 dBFS signal therefore lands
-		// (-24 + kInputMakeupDb + 24 - kThresholdDb) dB over the threshold,
-		// and 4:1 reduces that by (1 - 1/4).
+		// kGainStepsDb[4] + kInputMakeupDb. A -24 dBFS signal therefore lands
+		// (-24 + kGainStepsDb[4] + kInputMakeupDb - kThresholdDb) dB over the
+		// threshold, and 4:1 reduces that by (1 - 1/4).
 		const double amp = dbToLinear (-24.0);
-		const double over = -24.0 - 24.0 + kInputMakeupDb - kThresholdDb;
+		const double over =
+		    -24.0 + kGainStepsDb[kInputDefaultStep] + kInputMakeupDb - kThresholdDb;
 		const double expectedGr = over * 0.75;
 		Result r;
 		if (!measure (amp, 220.0, 1.5, baseline, r))
@@ -1094,7 +1096,7 @@ int main (int argc, char* argv[])
 		       "4:1 reduction matches the gain computer",
 		       f2 (r.meterGrDb) + " dB, expected " + f2 (expectedGr));
 
-		const double staticGain = kInputMakeupDb + kOutputMakeupDb - 48.0;
+		const double staticGain = kInputMakeupDb + kOutputMakeupDb + 2.0 * kGainStepsDb[kInputDefaultStep];
 		const double outDb = linearToDb (r.outPeak);
 		check (outDb < -24.0 + staticGain - 1.0, "output is pulled down accordingly",
 		       f2 (outDb) + " dBFS");
@@ -1174,8 +1176,8 @@ int main (int argc, char* argv[])
 		       f2 (linearToDb (r.outPeak)) + " dBFS");
 	}
 	{
-		// Mark 4 (-24 dB) to mark 8 (0 dB) is 24 dB of attenuator travel,
-		// whatever the fixed make-up behind it happens to be.
+		// Mark 4 to mark 8 (0 dB) is kGainStepsDb[8] - kGainStepsDb[4] dB of
+		// attenuator travel, whatever the fixed make-up behind it happens to be.
 		const double amp = dbToLinear (-40.0);
 		Result low, high;
 		if (!measure (amp, 220.0, 0.5, baseline, low))
@@ -1183,8 +1185,9 @@ int main (int argc, char* argv[])
 		if (!measure (amp, 220.0, 0.5, withParam (kParamOutputId, step (8, kGainStepCount)), high))
 			return 1;
 		const double lift = linearToDb (high.outPeak) - linearToDb (low.outPeak);
-		check (std::fabs (lift - 24.0) < 0.6, "Output mark 4 -> mark 8 is +24 dB",
-		       f2 (lift) + " dB");
+		const double expectedLift = kGainStepsDb[8] - kGainStepsDb[kOutputDefaultStep];
+		check (std::fabs (lift - expectedLift) < 0.6, "Output mark 4 -> mark 8 travel matches the table",
+		       f2 (lift) + " dB, expected " + f2 (expectedLift));
 	}
 
 	//--- 6. Analog ----------------------------------------------------
@@ -1220,7 +1223,7 @@ int main (int argc, char* argv[])
 		check (std::fabs (r.meterInDb - expectedVu) < 1.0,
 		       "IN meter reads the input in VU",
 		       f2 (r.meterInDb) + " VU, expected " + f2 (expectedVu));
-		const double staticGain = kInputMakeupDb + kOutputMakeupDb - 48.0;
+		const double staticGain = kInputMakeupDb + kOutputMakeupDb + 2.0 * kGainStepsDb[kInputDefaultStep];
 		check (r.meterOutDb < r.meterInDb + staticGain + 0.5,
 		       "OUT meter shows reduction relative to the static gain",
 		       f2 (r.meterOutDb) + " VU vs IN " + f2 (r.meterInDb) + " + " + f2 (staticGain));

@@ -4,7 +4,39 @@ Notable changes to Glass76. This project follows [semantic versioning](https://s
 with the caveat that the plug-in's class IDs never change — a saved project
 made with any version will always find the plug-in again.
 
-## [Unreleased]
+## [1.1.1] — 2026-09-07
+
+### Plug-in
+
+- **Signature** recalibrated against the CLA-76 sweep-test comparison
+  (`SWEEP_ANALYSIS.md`): the detector now runs through a ~45 Hz sidechain
+  highpass and a short smoother ahead of the gain computer (was riding
+  individual bass cycles, 2-4x the CLA-76's low-frequency gain ripple), the
+  output saturator's symmetric quadratic pre-term is replaced with an
+  asymmetric quadratic/quartic shape blended with a touch of hard clipping
+  (closer to the CLA-76's measured even-harmonic profile), and the
+  saturator's drive now tracks the pre-gain-reduction signal level instead
+  of the applied gain reduction, so distortion actually responds to the
+  Input knob instead of staying constant. CLEAN is unaffected — its
+  detector and output stage were already unconditioned/unsaturated by
+  design.
+- **Input/Output attenuator taper corrected below −18 dB.** The nine printed
+  marks were uniform 6 dB apart from launch, justified only by a single
+  reference point (the real CLA-76 reads "-30.0 dB" at mark 3). A nonlinear
+  fit of Glass76's own gain-computer shape against the CLA-76's actual
+  measured response (`SWEEP_ANALYSIS.md`, Finding 7), validated first
+  against Glass76 CLEAN's own known table, shows marks 1 and 4 were off by a
+  real amount: −48 dB → −43 dB and −24 dB → −19.5 dB. Marks above −18 dB are
+  unchanged — the same measurement shows the real hardware compresses harder
+  than its nominal 20:1 ratio at that much drive, which a taper table alone
+  cannot fix, so that part is left as documented open work rather than
+  guessed at.
+
+### Verified
+
+- SDK validator 47/47, offline DSP host 15/15, from a clean rebuild. Three
+  offline-host checks that had the old `-24 dB` mark-4 value baked in as a
+  magic number now read `kGainStepsDb` directly instead.
 
 ## [1.1.0] — 2026-09-07
 
@@ -102,6 +134,6 @@ First public release.
 - Not yet verified: behaviour inside FL Studio itself, and rendering at 125 %
   and 150 % display scaling.
 
-[Unreleased]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.1.0...HEAD
+[1.1.1]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jxxnmade/Glass76_github_repo/releases/tag/v1.0.0

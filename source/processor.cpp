@@ -38,6 +38,40 @@ inline double flush (double x)
 	return (x > -1e-25 && x < 1e-25) ? 0.0 : x;
 }
 
+//------------------------------------------------------------------------
+// Signature's output-stage saturator.
+//
+// Tuned offline (FFT against a synthetic sine, not against the plug-in
+// itself) to approximate the CLA-76's measured 193 Hz harmonic profile from
+// SWEEP_ANALYSIS.md Finding 4: H2 ~-47 dB, H3 ~-43, H4 ~-62, H5 ~-50,
+// H6 ~-66, H7 ~-55 (relative to the fundamental). The old symmetric
+// `d + 0.10*d*d` pre-term only ever produced H2 and DC -- that is why the
+// previous build's H2 sat 7 dB hot and H4 11 dB shy of the CLA-76 with
+// nothing between them. Splitting the quadratic term across the two halves
+// of the waveform, adding a quartic term, and blending in a touch of hard
+// clipping between them gets all six harmonics within ~2 dB of the target
+// instead. It is still a memoryless shaper standing in for a real
+// FET/transformer stage, so this is an approximation, not an exact match --
+// re-verify against a dedicated per-Input-position harmonic sweep (see the
+// analysis doc's "Plan") before trusting it past a couple of dB.
+constexpr double kSatQuadPos = 0.10;
+constexpr double kSatQuadNeg = -0.10;
+constexpr double kSatQuartic = 0.5;
+constexpr double kSatHardBlend = 0.20;
+constexpr double kSatHardLimit = 0.3;
+
+inline double signatureSaturate (double d)
+{
+	const double quad = (d >= 0.0 ? kSatQuadPos : kSatQuadNeg) * d * d;
+	const double a = d + quad + kSatQuartic * d * d * d * d;
+	const double soft = a / std::sqrt (1.0 + a * a);
+	// Not divided by kSatHardLimit: both branches must have unit slope at
+	// a=0, or blending them shifts the small-signal gain away from unity
+	// and throws off the calibration in params.h.
+	const double hard = std::clamp (a, -kSatHardLimit, kSatHardLimit);
+	return (1.0 - kSatHardBlend) * soft + kSatHardBlend * hard;
+}
+
 } // anonymous namespace
 
 //------------------------------------------------------------------------
@@ -93,6 +127,9 @@ tresult PLUGIN_API Glass76Processor::setActive (TBool state)
 		mHumPhase = 0.0;
 		mDcState[0] = mDcState[1] = 0.0;
 		mDcPrevIn[0] = mDcPrevIn[1] = 0.0;
+		mDetHpState[0] = mDetHpState[1] = 0.0;
+		mDetHpPrevIn[0] = mDetHpPrevIn[1] = 0.0;
+		mDetSmooth = 0.0;
 		mMeterGrDb = 0.0;
 		mVuInMeanSquare = 0.0;
 		mVuOutMeanSquare = 0.0;
@@ -129,6 +166,16 @@ tresult PLUGIN_API Glass76Processor::setupProcessing (ProcessSetup& newSetup)
 	// the needle behaves like the real thing.
 	mVuCoef = onePoleCoef (0.300, mSampleRate);
 	mVuReleaseCoef = onePoleCoef (0.600, mSampleRate);
+
+	// Signature's sidechain conditioning: a ~45 Hz one-pole highpass ahead of
+	// the detector, plus a very short (150 us) smoother on the rectified
+	// level. Without this the detector rides individual bass cycles, which
+	// showed up as 2-4x the CLA-76's low-frequency gain ripple (see
+	// SWEEP_ANALYSIS.md Finding 5). CLEAN's detector never uses these --
+	// it stays the raw, instantaneous |s| a basic feed-forward compressor
+	// would use.
+	mDetHpCoef = 1.0 - (2.0 * 3.14159265358979323846 * 45.0 / mSampleRate);
+	mDetSmoothCoef = onePoleCoef (150e-6, mSampleRate);
 
 	updateDerived ();
 
@@ -340,15 +387,46 @@ void Glass76Processor::processAudio (ProcessData& data)
 			}
 		}
 
+		//--- detector -----------------------------------------------------
+		// Signature highpasses and briefly smooths the sidechain first (see
+		// setupProcessing); CLEAN reads the instantaneous rectified level,
+		// same as before -- the simplest thing a feed-forward compressor
+		// can do.
+		double det;
+		if (mSignatureModel)
+		{
+			double hp[2] = {0.0, 0.0};
+			for (int32 ch = 0; ch < numChannels; ch++)
+			{
+				const double h = s[ch] - mDetHpPrevIn[ch] + mDetHpCoef * mDetHpState[ch];
+				mDetHpPrevIn[ch] = s[ch];
+				mDetHpState[ch] = flush (h);
+				hp[ch] = h;
+			}
+			double raw = std::fabs (hp[0]);
+			if (numChannels > 1)
+				raw = std::max (raw, std::fabs (hp[1]));
+			mDetSmooth += (raw - mDetSmooth) * mDetSmoothCoef;
+			det = mDetSmooth;
+		}
+		else
+		{
+			det = std::fabs (s[0]);
+			if (numChannels > 1)
+				det = std::max (det, std::fabs (s[1]));
+		}
+		const double detDb = linearToDb (det);
+		// How far the pre-gain-reduction signal sits over threshold. Used
+		// both by the gain computer below and, for Signature, to drive the
+		// output saturator -- unlike gain reduction, this tracks the Input
+		// knob directly instead of being pinned by the compressor's own
+		// feedback loop.
+		const double over = detDb - mThresholdDb;
+
 		//--- gain computer ----------------------------------------------
 		double targetGr = 0.0;
 		if (!mCompOff)
 		{
-			double det = std::fabs (s[0]);
-			if (numChannels > 1)
-				det = std::max (det, std::fabs (s[1]));
-			const double detDb = linearToDb (det);
-			const double over = detDb - mThresholdDb;
 			const double halfKnee = mKneeDb * 0.5;
 			if (over >= halfKnee)
 				targetGr = over * mRatioK;
@@ -388,9 +466,14 @@ void Glass76Processor::processAudio (ProcessData& data)
 		const double makeupLin = mAutoMakeup ? dbToLinear (std::clamp (makeup, 0.0, 30.0)) : 1.0;
 
 		const double gr = dbToLinear (-grDb);
-		// The FET is driven harder the harder it is working. Unused in
-		// CLEAN, where mSatDrive is always 1 and no saturation is applied.
-		const double drive = mSatDrive * (1.0 + grDb * 0.020);
+		// The FET is driven harder the hotter the input is -- from the
+		// pre-gain-reduction level (`over`), not from the applied gain
+		// reduction, which the compressor's own feedback pins to roughly
+		// the same value regardless of the Input knob (see
+		// SWEEP_ANALYSIS.md Finding 4). Unused in CLEAN, where mSatDrive is
+		// always 1 and no saturation is applied.
+		const double driveOver = mSignatureModel ? std::clamp (over, 0.0, 40.0) : 0.0;
+		const double drive = mSatDrive * (1.0 + driveOver * 0.020);
 
 		//--- output stage ------------------------------------------------
 		double y[2] = {0.0, 0.0};
@@ -400,12 +483,10 @@ void Glass76Processor::processAudio (ProcessData& data)
 
 			if (mSignatureModel)
 			{
-				// Asymmetric soft clip: second harmonic then a rational fold.
 				const double d = v * drive;
-				const double a = d + 0.10 * d * d;
-				double sat = (a / std::sqrt (1.0 + a * a)) / drive;
+				double sat = signatureSaturate (d) / drive;
 
-				// The squared term adds DC; a 5 Hz one-pole high-pass removes it.
+				// The asymmetric terms add DC; a 5 Hz one-pole high-pass removes it.
 				const double hp = sat - mDcPrevIn[ch] + dcR * mDcState[ch];
 				mDcPrevIn[ch] = sat;
 				mDcState[ch] = flush (hp);

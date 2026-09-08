@@ -46,8 +46,8 @@ install copy fails.
 | # | Control | Type | Values |
 |---|---|---|---|
 | 1 | Model | toolbar glass slider | Glass76 CLEAN / Glass76 Signature |
-| 2 | Input | 9-detent slider | −∞, −48, −36, −30, −24, −18, −12, −6, 0 dB |
-| 3 | Output | 9-detent slider | same |
+| 2 | Input | continuous slider (9 printed marks) | −∞, −43, −36, −30, −19.5, −18, −12, −6, 0 dB |
+| 3 | Output | continuous slider (9 printed marks) | same |
 | 4 | Auto makeup | switch | on / off |
 | 5 | Attack | segmented | positions 1, 3, 5, 7 |
 | 6 | Release | segmented | positions 1, 3, 5, 7 |
