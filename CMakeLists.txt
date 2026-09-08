@@ -127,6 +127,10 @@ smtg_add_vst3plugin(Glass76
     source/ui/theme.h
     source/ui/macdraw.h
     source/ui/macdraw.cpp
+    source/ui/widget.h
+    source/ui/skin.h
+    source/ui/skin_glass.h
+    source/ui/skin_glass.cpp
     source/ui/editor.h
     source/ui/editor.cpp
 )
@@ -223,6 +227,10 @@ if(GLASS76_BUILD_UI_SNAPSHOT)
         source/ui/theme.h
         source/ui/macdraw.h
         source/ui/macdraw.cpp
+        source/ui/widget.h
+        source/ui/skin.h
+        source/ui/skin_glass.h
+        source/ui/skin_glass.cpp
         source/ui/editor.h
         source/ui/editor.cpp
     )

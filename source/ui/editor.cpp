@@ -3,10 +3,11 @@
 //
 // RootView -- see editor.h for the design notes.
 //
-// Every number in this file is traced to references/macos-27.md in the
-// macos-ui-on-windows skill (measured from Apple's macOS 27 UI kit), or
-// derived from it by the rules in that document. Where a value is a
-// judgement call it says so.
+// Layout geometry here is unchanged from before the skin split: every
+// number is still traced to references/macos-27.md in the
+// macos-ui-on-windows skill, or derived from it. What moved to
+// skin_glass.cpp is *painting* -- how each widget looks -- not *where* it
+// is or *when* it reacts to a click, which both stay here.
 //------------------------------------------------------------------------
 
 #include "editor.h"
@@ -14,6 +15,7 @@
 #include "../controller.h"
 #include "../params.h"
 #include "macdraw.h"
+#include "skin_glass.h"
 #include "theme.h"
 
 #include "vstgui/lib/cdrawcontext.h"
@@ -45,7 +47,6 @@ constexpr CCoord kToolbarH = mac::kUnifiedToolbarHeight;  // 52 [kit]
 constexpr CCoord kInset = mac::kContentInset;             // 12 in 27, not Aqua's 20
 constexpr CCoord kGap = 12;
 constexpr CCoord kCardPad = 16;
-constexpr CCoord kCardRadius = mac::kGroupBoxRadius;      // 12 [kit]
 
 // Cards, in view-local coordinates.
 constexpr CCoord kColLeftX = 12, kColLeftR = 532;
@@ -80,20 +81,6 @@ std::string fmt (const char* format, ...)
 bool hit (const CRect& r, const CPoint& p)
 {
 	return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
-}
-
-/** A small drop shadow for chips and knobs: 0 0.5px 1.5px, the scale the
-    kit uses for controls. Anything larger reads as a web card. */
-void chipShadow (CDrawContext* context, const CRect& r, CCoord radius, const CColor& color)
-{
-	for (int i = 3; i >= 1; i--)
-	{
-		CRect s (r);
-		s.inset (-static_cast<CCoord> (i) * 0.5, -static_cast<CCoord> (i) * 0.5);
-		s.offset (0, 0.5 + i * 0.25);
-		mac::fillSquircle (context, s, radius + i * 0.5,
-		                   mac::withAlpha (color, 0.05 / i));
-	}
 }
 
 /** The image's dominant colour, as a brightness-weighted circular mean of
@@ -142,8 +129,7 @@ bool computeAccentHueFromImage (VSTGUI::CBitmap* bitmap, double& outHueDeg)
 			// Brightness = the pixel's HSV value channel, i.e. its brightest
 			// component -- a fully-on red (255,0,0) weighs 255x a barely-on
 			// blue (0,0,1), exactly as specified.
-			const double weight =
-			    static_cast<double> (std::max ({c.red, c.green, c.blue}));
+			const double weight = static_cast<double> (std::max ({c.red, c.green, c.blue}));
 			if (weight <= 0.0)
 				continue;
 
@@ -175,16 +161,29 @@ bool computeAccentHueFromImage (VSTGUI::CBitmap* bitmap, double& outHueDeg)
 RootView::RootView (Glass76Controller* owner, const CRect& size)
 : CView (size), mController (owner)
 {
+	// Skin selection has no effect yet -- the faceplate/resize plumbing
+	// that lets a second skin actually be chosen is a later stage. Every
+	// SkinId resolves to the same Glass instance until then (see
+	// skins::get in skin_glass.cpp).
+	mSkin = &skins::get (SkinId::Glass);
+
 	setMouseEnabled (true);
 	setTransparency (false);
 	buildLayout ();
 
 	// Seed the animated "shown" values from the targets buildLayout just set
 	// so the first frame is drawn at rest, not gliding in from zero.
-	for (auto& sl : mSliders)   sl.shownNorm = sl.norm;
-	for (auto& sw : mSwitches)  sw.shownOn = sw.on ? 1.0 : 0.0;
-	for (auto& p : mPills)      p.shownOn = p.on ? 1.0 : 0.0;
-	for (auto& seg : mSegments) seg.shownStep = static_cast<double> (seg.step);
+	for (auto& w : mWidgets)
+	{
+		switch (w.kind)
+		{
+			case WidgetKind::Slider: w.shownNorm = w.norm; break;
+			case WidgetKind::Switch:
+			case WidgetKind::Pill: w.shownOn = w.on ? 1.0 : 0.0; break;
+			case WidgetKind::Segmented: w.shownStep = static_cast<double> (w.step); break;
+			default: break;
+		}
+	}
 }
 
 //------------------------------------------------------------------------
@@ -211,6 +210,67 @@ void RootView::buildLayout ()
 		return CRect (X + l, Y + t, X + r, Y + b);
 	};
 
+	// Small builders, one per shape, mirroring the aggregate-initializer
+	// call sites this replaced field-for-field -- see widget.h for what
+	// each field means per kind.
+	auto addCard = [this] (const CRect& r, std::string title) {
+		Widget w;
+		w.kind = WidgetKind::Card;
+		w.r = r;
+		w.text = std::move (title);
+		mWidgets.push_back (std::move (w));
+	};
+	auto addLabel = [this] (const CRect& r, std::string text, CHoriTxtAlign align, int style) {
+		Widget w;
+		w.kind = WidgetKind::Label;
+		w.r = r;
+		w.text = std::move (text);
+		w.align = align;
+		w.style = style;
+		mWidgets.push_back (std::move (w));
+	};
+	auto addSegmented = [this] (const CRect& r, ParamID id, std::vector<std::string> labels,
+	                            int step, bool capsule) {
+		Widget w;
+		w.kind = WidgetKind::Segmented;
+		w.r = r;
+		w.id = id;
+		w.labels = std::move (labels);
+		w.step = step;
+		w.capsule = capsule;
+		mWidgets.push_back (std::move (w));
+	};
+	auto addSlider = [this] (const CRect& r, ParamID id, int detents, bool snap, bool bipolar,
+	                         double norm, double defaultNorm) {
+		Widget w;
+		w.kind = WidgetKind::Slider;
+		w.r = r;
+		w.id = id;
+		w.detents = detents;
+		w.snap = snap;
+		w.bipolar = bipolar;
+		w.norm = norm;
+		w.defaultNorm = defaultNorm;
+		mWidgets.push_back (std::move (w));
+	};
+	auto addSwitch = [this] (const CRect& r, ParamID id, bool on) {
+		Widget w;
+		w.kind = WidgetKind::Switch;
+		w.r = r;
+		w.id = id;
+		w.on = on;
+		mWidgets.push_back (std::move (w));
+	};
+	auto addPill = [this] (const CRect& r, ParamID id, std::string text, bool on) {
+		Widget w;
+		w.kind = WidgetKind::Pill;
+		w.r = r;
+		w.id = id;
+		w.text = std::move (text);
+		w.on = on;
+		mWidgets.push_back (std::move (w));
+	};
+
 	//--- toolbar ------------------------------------------------------
 	// Unified toolbar + title: 52 tall, which is the kit's control height
 	// plus 16. No traffic lights: the host owns the window chrome, and
@@ -221,37 +281,43 @@ void RootView::buildLayout ()
 
 	// Toolbar trailing edge: 20 from the window edge, XL-class controls.
 	mAppearanceRect = R (kPanelWidth - 20 - 28, 12, kPanelWidth - 20, 40);
-	mPills.push_back ({R (kPanelWidth - 20 - 28 - 8 - 100, 12,
-	                      kPanelWidth - 20 - 28 - 8, 40),
-	                   kParamCompOffId, "Comp Off", false});
+	addPill (R (kPanelWidth - 20 - 28 - 8 - 100, 12, kPanelWidth - 20 - 28 - 8, 40),
+	        kParamCompOffId, "Comp Off", false);
 	mSettingsButtonRect = R (kPanelWidth - 20 - 28 - 8 - 100 - 8 - 28, 12,
 	                         kPanelWidth - 20 - 28 - 8 - 100 - 8, 40);
 
 	// Toolbar leading edge: the glass model slider. It doubles as the
 	// wordmark -- "Glass76 CLEAN" or "Glass76 Signature" -- and as the
 	// control that switches the processor between the two. A Segmented
-	// like any other, drawn with its own fonts (see drawSegmented). Narrower
-	// than the original 368: at that width each of the two chips read as an
-	// oversized button rather than a compact model switch.
+	// like any other, drawn with its own fonts (see GlassSkin::paintSegmented).
+	// Narrower than the original 368: at that width each of the two chips
+	// read as an oversized button rather than a compact model switch.
 	constexpr CCoord kModelSwitchWidth = 300;
-	mSegments.push_back ({R (kInset, 12, kInset + kModelSwitchWidth, 40), kParamModelId,
-	                      {"Glass76 CLEAN", "Glass76 Signature"},
-	                      kModelDefaultStep, true});
+	addSegmented (R (kInset, 12, kInset + kModelSwitchWidth, 40), kParamModelId,
+	             {"Glass76 CLEAN", "Glass76 Signature"}, kModelDefaultStep, true);
 
 	//--- cards --------------------------------------------------------
-	mCards.push_back ({R (kColLeftX, kCardGainT, kColLeftR, kCardGainB), "Gain"});
-	mCards.push_back ({R (kColLeftX, kCardDynT, kColLeftR, kCardDynB), "Dynamics"});
-	mCards.push_back ({R (kColRightX, kCardMeterT, kColRightR, kCardMeterB), "Meter"});
-	mCards.push_back ({R (kColRightX, kCardOutT, kColRightR, kCardOutB), "Output"});
-
-	for (const auto& card : mCards)
+	struct CardSpec
 	{
-		CRect title (card.r);
+		CRect r;
+		const char* title;
+	};
+	const CardSpec cardSpecs[4] = {
+	    {R (kColLeftX, kCardGainT, kColLeftR, kCardGainB), "Gain"},
+	    {R (kColLeftX, kCardDynT, kColLeftR, kCardDynB), "Dynamics"},
+	    {R (kColRightX, kCardMeterT, kColRightR, kCardMeterB), "Meter"},
+	    {R (kColRightX, kCardOutT, kColRightR, kCardOutB), "Output"},
+	};
+	for (const auto& c : cardSpecs)
+		addCard (c.r, c.title);
+	for (const auto& c : cardSpecs)
+	{
+		CRect title (c.r);
 		title.left += kCardPad;
 		title.top += 12;
 		title.bottom = title.top + 18;
 		title.right = title.left + 200;
-		mTexts.push_back ({title, card.title, kLeftText, 0});
+		addLabel (title, c.title, kLeftText, 0);
 	}
 
 	//--- Gain card ----------------------------------------------------
@@ -270,27 +336,21 @@ void RootView::buildLayout ()
 		const CCoord row2 = kCardGainT + 90;
 		const CCoord row3 = kCardGainT + 132;
 
-		mTexts.push_back ({R (kColLeftX + kCardPad, row1, labelR, row1 + 26),
-		                   "Input", kRightText, 1});
-		mSliders.push_back ({R (ctrlX, row1, ctrlR, row1 + 26), kParamInputId,
-		                     kGainStepCount, false, false,
-		                     stepToNormalized (kInputDefaultStep, kGainStepCount),
-		                     stepToNormalized (kInputDefaultStep, kGainStepCount)});
+		addLabel (R (kColLeftX + kCardPad, row1, labelR, row1 + 26), "Input", kRightText, 1);
+		addSlider (R (ctrlX, row1, ctrlR, row1 + 26), kParamInputId, kGainStepCount, false, false,
+		          stepToNormalized (kInputDefaultStep, kGainStepCount),
+		          stepToNormalized (kInputDefaultStep, kGainStepCount));
 		mValueInput = R (valueX, row1, valueR, row1 + 26);
 
-		mTexts.push_back ({R (kColLeftX + kCardPad, row2, labelR, row2 + 26),
-		                   "Output", kRightText, 1});
-		mSliders.push_back ({R (ctrlX, row2, ctrlR, row2 + 26), kParamOutputId,
-		                     kGainStepCount, false, false,
-		                     stepToNormalized (kOutputDefaultStep, kGainStepCount),
-		                     stepToNormalized (kOutputDefaultStep, kGainStepCount)});
+		addLabel (R (kColLeftX + kCardPad, row2, labelR, row2 + 26), "Output", kRightText, 1);
+		addSlider (R (ctrlX, row2, ctrlR, row2 + 26), kParamOutputId, kGainStepCount, false, false,
+		          stepToNormalized (kOutputDefaultStep, kGainStepCount),
+		          stepToNormalized (kOutputDefaultStep, kGainStepCount));
 		mValueOutput = R (valueX, row2, valueR, row2 + 26);
 
-		mTexts.push_back ({R (kColLeftX + kCardPad, row3, labelR, row3 + 24),
-		                   "Auto makeup", kRightText, 1});
-		mSwitches.push_back ({R (ctrlX, row3, ctrlX + mac::kSwitchWidth,
-		                         row3 + mac::kSwitchHeight),
-		                      kParamAutoMakeupId, false});
+		addLabel (R (kColLeftX + kCardPad, row3, labelR, row3 + 24), "Auto makeup", kRightText, 1);
+		addSwitch (R (ctrlX, row3, ctrlX + mac::kSwitchWidth, row3 + mac::kSwitchHeight),
+		          kParamAutoMakeupId, false);
 	}
 
 	//--- Dynamics card ------------------------------------------------
@@ -306,34 +366,29 @@ void RootView::buildLayout ()
 		const CCoord row3 = kCardDynT + 138;
 		const CCoord h = mac::kSizeLg;   // 28: segmented controls are capsules at Lg
 
-		mTexts.push_back ({R (kColLeftX + kCardPad, row1, labelR, row1 + h),
-		                   "Attack", kRightText, 1});
-		mSegments.push_back ({R (ctrlX, row1, ctrlR, row1 + h), kParamAttackId,
-		                      {"1", "3", "5", "7"}, kAttackDefaultStep, true});
+		addLabel (R (kColLeftX + kCardPad, row1, labelR, row1 + h), "Attack", kRightText, 1);
+		addSegmented (R (ctrlX, row1, ctrlR, row1 + h), kParamAttackId, {"1", "3", "5", "7"},
+		             kAttackDefaultStep, true);
 		mValueAttack = R (valueX, row1, valueR, row1 + h);
 
-		mTexts.push_back ({R (kColLeftX + kCardPad, row2, labelR, row2 + h),
-		                   "Release", kRightText, 1});
-		mSegments.push_back ({R (ctrlX, row2, ctrlR, row2 + h), kParamReleaseId,
-		                      {"1", "3", "5", "7"}, kReleaseDefaultStep, true});
+		addLabel (R (kColLeftX + kCardPad, row2, labelR, row2 + h), "Release", kRightText, 1);
+		addSegmented (R (ctrlX, row2, ctrlR, row2 + h), kParamReleaseId, {"1", "3", "5", "7"},
+		             kReleaseDefaultStep, true);
 		mValueRelease = R (valueX, row2, valueR, row2 + h);
 
-		mTexts.push_back ({R (kColLeftX + kCardPad, row3, labelR, row3 + h),
-		                   "Ratio", kRightText, 1});
-		mSegments.push_back ({R (ctrlX, row3, ctrlR, row3 + h), kParamRatioId,
-		                      {"20:1", "12:1", "8:1", "4:1", "All"},
-		                      kRatioDefaultStep, true});
+		addLabel (R (kColLeftX + kCardPad, row3, labelR, row3 + h), "Ratio", kRightText, 1);
+		addSegmented (R (ctrlX, row3, ctrlR, row3 + h), kParamRatioId,
+		             {"20:1", "12:1", "8:1", "4:1", "All"}, kRatioDefaultStep, true);
 		mValueRatio = R (valueX, row3, valueR, row3 + h);
 	}
 
 	//--- Meter card ---------------------------------------------------
 	{
-		mGaugeRect = R (kColRightX + kCardPad, kCardMeterT + 38,
-		                kColRightR - kCardPad, kCardMeterT + 186);
-		mSegments.push_back ({R (kColRightX + kCardPad, kCardMeterT + 192,
-		                         kColRightR - kCardPad, kCardMeterT + 220),
-		                      kParamMeterId, {"GR", "IN", "OUT"},
-		                      kMeterDefaultStep, true});
+		mGaugeRect = R (kColRightX + kCardPad, kCardMeterT + 38, kColRightR - kCardPad,
+		                kCardMeterT + 186);
+		addSegmented (R (kColRightX + kCardPad, kCardMeterT + 192, kColRightR - kCardPad,
+		                kCardMeterT + 220),
+		             kParamMeterId, {"GR", "IN", "OUT"}, kMeterDefaultStep, true);
 	}
 
 	//--- Output card --------------------------------------------------
@@ -348,24 +403,18 @@ void RootView::buildLayout ()
 		const CCoord row2 = kCardOutT + 76;
 		const CCoord row3 = kCardOutT + 108;
 
-		mTexts.push_back ({R (kColRightX + kCardPad, row1, labelR, row1 + 24),
-		                   "Mix", kRightText, 1});
-		mSliders.push_back ({R (ctrlX, row1, ctrlR, row1 + 24), kParamMixId,
-		                     0, false, false, 1.0, 1.0});
+		addLabel (R (kColRightX + kCardPad, row1, labelR, row1 + 24), "Mix", kRightText, 1);
+		addSlider (R (ctrlX, row1, ctrlR, row1 + 24), kParamMixId, 0, false, false, 1.0, 1.0);
 		mValueMix = R (valueX, row1, valueR, row1 + 24);
 
-		mTexts.push_back ({R (kColRightX + kCardPad, row2, labelR, row2 + 24),
-		                   "Trim", kRightText, 1});
-		mSliders.push_back ({R (ctrlX, row2, ctrlR, row2 + 24), kParamTrimId,
-		                     0, false, true, trimDbToNormalized (kTrimDefaultDb),
-		                     trimDbToNormalized (kTrimDefaultDb)});
+		addLabel (R (kColRightX + kCardPad, row2, labelR, row2 + 24), "Trim", kRightText, 1);
+		addSlider (R (ctrlX, row2, ctrlR, row2 + 24), kParamTrimId, 0, false, true,
+		          trimDbToNormalized (kTrimDefaultDb), trimDbToNormalized (kTrimDefaultDb));
 		mValueTrim = R (valueX, row2, valueR, row2 + 24);
 
-		mTexts.push_back ({R (kColRightX + kCardPad, row3, labelR, row3 + 24),
-		                   "Analog", kRightText, 1});
-		mSegments.push_back ({R (ctrlX, row3, ctrlR, row3 + mac::kSizeRg),
-		                      kParamAnalogId, {"50 Hz", "60 Hz", "Off"},
-		                      kAnalogDefaultStep, false});
+		addLabel (R (kColRightX + kCardPad, row3, labelR, row3 + 24), "Analog", kRightText, 1);
+		addSegmented (R (ctrlX, row3, ctrlR, row3 + mac::kSizeRg), kParamAnalogId,
+		             {"50 Hz", "60 Hz", "Off"}, kAnalogDefaultStep, false);
 	}
 
 	//--- settings overlay -----------------------------------------------
@@ -375,8 +424,7 @@ void RootView::buildLayout ()
 		const CCoord cardT = kPanelHeight * 0.5 - cardH * 0.5;
 		mSettingsCardRect = R (cardL, cardT, cardL + cardW, cardT + cardH);
 
-		mSettingsChooseRect = R (cardL + kCardPad, cardT + 78,
-		                         cardL + kCardPad + 168, cardT + 78 + 32);
+		mSettingsChooseRect = R (cardL + kCardPad, cardT + 78, cardL + kCardPad + 168, cardT + 78 + 32);
 		mSettingsClearRect = R (cardL + kCardPad + 168 + 10, cardT + 78,
 		                        cardL + kCardPad + 168 + 10 + 84, cardT + 78 + 32);
 
@@ -399,42 +447,35 @@ void RootView::buildLayout ()
 //========================================================================
 // Incoming values
 //========================================================================
-RootView::Segmented* RootView::findSegmented (ParamID id)
+Widget* RootView::findWidget (ParamID id, WidgetKind kind)
 {
-	for (auto& s : mSegments)
-	{
-		if (s.id == id)
-			return &s;
-	}
+	for (auto& w : mWidgets)
+		if (w.id == id && w.kind == kind)
+			return &w;
 	return nullptr;
 }
 
 //------------------------------------------------------------------------
-RootView::Slider* RootView::findSlider (ParamID id)
+const Widget* RootView::findWidget (ParamID id, WidgetKind kind) const
 {
-	for (auto& s : mSliders)
-	{
-		if (s.id == id)
-			return &s;
-	}
+	for (const auto& w : mWidgets)
+		if (w.id == id && w.kind == kind)
+			return &w;
 	return nullptr;
 }
 
 //------------------------------------------------------------------------
 int RootView::stepOf (ParamID id) const
 {
-	for (const auto& s : mSegments)
-	{
-		if (s.id == id)
-			return s.step;
-	}
+	if (const auto* w = findWidget (id, WidgetKind::Segmented))
+		return w->step;
 	return 0;
 }
 
 //------------------------------------------------------------------------
 void RootView::setStep (ParamID id, int step)
 {
-	if (auto* seg = findSegmented (id))
+	if (auto* seg = findWidget (id, WidgetKind::Segmented))
 	{
 		if (seg->step != step)
 		{
@@ -444,7 +485,7 @@ void RootView::setStep (ParamID id, int step)
 		return;
 	}
 	// Input and Output are detented sliders, not segmented controls.
-	if (auto* sl = findSlider (id))
+	if (auto* sl = findWidget (id, WidgetKind::Slider))
 	{
 		const double n = stepToNormalized (step, sl->detents);
 		if (std::fabs (sl->norm - n) > 1e-9)
@@ -458,30 +499,23 @@ void RootView::setStep (ParamID id, int step)
 //------------------------------------------------------------------------
 void RootView::setToggle (ParamID id, bool on)
 {
-	for (auto& sw : mSwitches)
+	if (auto* sw = findWidget (id, WidgetKind::Switch))
 	{
-		if (sw.id == id)
+		if (sw->on != on)
 		{
-			if (sw.on != on)
-			{
-				sw.on = on;
-				if (id == kParamAutoMakeupId)
-					mAutoMakeupOn = on;
-				invalid ();
-			}
-			return;
+			sw->on = on;
+			if (id == kParamAutoMakeupId)
+				mAutoMakeupOn = on;
+			invalid ();
 		}
+		return;
 	}
-	for (auto& p : mPills)
+	if (auto* p = findWidget (id, WidgetKind::Pill))
 	{
-		if (p.id == id)
+		if (p->on != on)
 		{
-			if (p.on != on)
-			{
-				p.on = on;
-				invalid ();
-			}
-			return;
+			p->on = on;
+			invalid ();
 		}
 	}
 }
@@ -489,7 +523,7 @@ void RootView::setToggle (ParamID id, bool on)
 //------------------------------------------------------------------------
 void RootView::setContinuous (ParamID id, double normalized)
 {
-	if (auto* sl = findSlider (id))
+	if (auto* sl = findWidget (id, WidgetKind::Slider))
 	{
 		if (std::fabs (sl->norm - normalized) > 1e-9)
 		{
@@ -647,17 +681,24 @@ bool easeToward (double& shown, double target, double rate)
 void RootView::onTimer ()
 {
 	// ~210ms to settle (6-7 ticks at 30Hz), which reads as a deliberate
-	// glide rather than either an instant snap or a sluggish drag.
+	// glide rather than either an instant snap or a sluggish drag. Four
+	// separate passes, in the same relative order the six original vectors
+	// were each eased in, though the order does not actually matter here --
+	// each widget's easing is independent of every other.
 	constexpr double kControlEase = 0.45;
 	bool controlsChanged = false;
-	for (auto& sl : mSliders)
-		controlsChanged |= easeToward (sl.shownNorm, sl.norm, kControlEase);
-	for (auto& sw : mSwitches)
-		controlsChanged |= easeToward (sw.shownOn, sw.on ? 1.0 : 0.0, kControlEase);
-	for (auto& p : mPills)
-		controlsChanged |= easeToward (p.shownOn, p.on ? 1.0 : 0.0, kControlEase);
-	for (auto& seg : mSegments)
-		controlsChanged |= easeToward (seg.shownStep, static_cast<double> (seg.step), kControlEase);
+	for (auto& w : mWidgets)
+		if (w.kind == WidgetKind::Slider)
+			controlsChanged |= easeToward (w.shownNorm, w.norm, kControlEase);
+	for (auto& w : mWidgets)
+		if (w.kind == WidgetKind::Switch)
+			controlsChanged |= easeToward (w.shownOn, w.on ? 1.0 : 0.0, kControlEase);
+	for (auto& w : mWidgets)
+		if (w.kind == WidgetKind::Pill)
+			controlsChanged |= easeToward (w.shownOn, w.on ? 1.0 : 0.0, kControlEase);
+	for (auto& w : mWidgets)
+		if (w.kind == WidgetKind::Segmented)
+			controlsChanged |= easeToward (w.shownStep, static_cast<double> (w.step), kControlEase);
 	if (controlsChanged)
 		invalid ();
 
@@ -694,7 +735,9 @@ void RootView::onTimer ()
 }
 
 //========================================================================
-// Drawing
+// Drawing -- RootView paints nothing itself; every call below hands off to
+// mSkin. RootView's job here is caching (the chrome bitmap) and ordering
+// (which widgets get painted when), not pixels.
 //========================================================================
 mac::Theme RootView::theme () const
 {
@@ -728,8 +771,7 @@ void RootView::ensureChrome (CDrawContext* context)
 		return;
 
 	const CRect view (getViewSize ());
-	auto offscreen = COffscreenContext::create (
-	    CPoint (view.getWidth (), view.getHeight ()), scale);
+	auto offscreen = COffscreenContext::create (CPoint (view.getWidth (), view.getHeight ()), scale);
 	if (!offscreen)
 	{
 		// Fall back to drawing the chrome inline. Slower, but correct.
@@ -761,108 +803,10 @@ void RootView::ensureChrome (CDrawContext* context)
 //------------------------------------------------------------------------
 void RootView::drawChrome (CDrawContext* context)
 {
-	const mac::Theme& t = theme ();
+	const mac::Theme t = theme ();
 	const CRect view (getViewSize ());
-
-	//--- window background ------------------------------------------
-	// #FFFFFF light / #1E1E1E dark [kit]. Aqua's #ECECEC is wrong here.
-	context->setFillColor (t.windowBg);
-	context->drawRect (view, kDrawFilled);
-
-	if (mBackgroundImage && mBackgroundImage->isLoaded ())
-	{
-		//--- user background image --------------------------------------
-		// This is the actual wallpaper the wash gradients below normally
-		// stand in for, so it replaces them outright: the glass panels
-		// sample it directly, the way Liquid Glass samples a real desktop.
-		const CCoord bw = mBackgroundImage->getWidth ();
-		const CCoord bh = mBackgroundImage->getHeight ();
-		if (bw > 0 && bh > 0)
-		{
-			// fillRectWithBitmap does not scale -- on the Direct2D backend it
-			// paints srcRect's own pixels 1:1 with WRAP tiling beyond that, so
-			// a source rect bigger than the view only ever shows its top-left
-			// corner and a smaller one repeats. Getting an actual "cover" fit
-			// (scaled to fill the view, centred, excess cropped) needs a real
-			// scale in the transform, so draw the whole bitmap through a
-			// scale+translate transform instead of pre-cropping a source rect.
-			const double scale =
-			    std::max (view.getWidth () / bw, view.getHeight () / bh);
-			const double drawnW = bw * scale;
-			const double drawnH = bh * scale;
-			const double offX = view.left + (view.getWidth () - drawnW) * 0.5;
-			const double offY = view.top + (view.getHeight () - drawnH) * 0.5;
-
-			ConcatClip clip (*context, view);
-			CGraphicsTransform fit;
-			fit.scale (scale, scale);
-			fit.translate (offX, offY);
-			CDrawContext::Transform t (*context, fit);
-			context->drawBitmap (mBackgroundImage, CRect (0, 0, bw, bh), CPoint (0, 0), 1.0f);
-		}
-
-		// A scrim in the window colour so text and glass edges keep reading
-		// correctly over arbitrary artwork, the same job the washes do below.
-		context->setFillColor (mac::withAlpha (t.windowBg, t.dark ? 0.55 : 0.45));
-		context->drawRect (view, kDrawFilled);
-	}
-	else
-	{
-		//--- wallpaper stand-in -----------------------------------------
-		// A plug-in window has no desktop behind it, so glass has nothing to
-		// sample. Two very faint radial washes give the glass something to
-		// separate itself from; without them the panels vanish into the
-		// background. Only used when there is no real wallpaper to sample.
-		auto path = VSTGUI::owned (context->createGraphicsPath ());
-		if (path)
-		{
-			path->addRect (view);
-			auto grad = VSTGUI::owned (CGradient::create (0.0, 1.0, t.washA,
-			                                      mac::withAlpha (t.washA, 0.0)));
-			if (grad)
-			{
-				context->fillRadialGradient (path, *grad,
-				                             CPoint (view.left + 150, view.top + 40), 460);
-				auto grad2 = VSTGUI::owned (CGradient::create (0.0, 1.0, t.washB,
-				                                       mac::withAlpha (t.washB, 0.0)));
-				if (grad2)
-					context->fillRadialGradient (path, *grad2,
-					                             CPoint (view.right - 120, view.bottom - 20), 440);
-			}
-		}
-	}
-
-	//--- toolbar ----------------------------------------------------
-	// Square corners: it is flush with the window edge, and the host owns
-	// the window's own rounding. Radius 0 still gets the full edge stack.
-	mac::drawGlassPanel (context, mToolbar, 0.0, t, false);
-	{
-		CRect sep (mToolbar.left, mToolbar.bottom - 1, mToolbar.right, mToolbar.bottom);
-		context->setFillColor (t.separator);
-		context->drawRect (sep, kDrawFilled);
-	}
-
-	mac::drawText (context, "Glass76", mTitleRect, kCenterText,
-	               mac::Fonts::get ().headline, t.label1);
-	mac::drawText (context, "FET Compressor", mSubtitleRect, kCenterText,
-	               mac::Fonts::get ().subhead, t.label2);
-
-	//--- cards ------------------------------------------------------
-	// Glass containers. Their children get plain fills from the
-	// over-glass set -- glass never composites on glass.
-	for (const auto& card : mCards)
-		mac::drawGlassPanel (context, card.r, kCardRadius, t, true);
-
-	//--- static text ------------------------------------------------
-	const auto& fonts = mac::Fonts::get ();
-	for (const auto& text : mTexts)
-	{
-		const CFontRef font = (text.style == 0) ? fonts.headline
-		                    : (text.style == 1) ? fonts.body
-		                                        : fonts.subhead;
-		const CColor color = (text.style == 0) ? t.label1 : t.label2;
-		mac::drawText (context, text.text.c_str (), text.r, text.align, font, color);
-	}
+	const SkinContext sc {t, *this, mDark != 0};
+	mSkin->paintBackdrop (context, view, mWidgets, mToolbar, mTitleRect, mSubtitleRect, sc);
 }
 
 //------------------------------------------------------------------------
@@ -877,577 +821,42 @@ void RootView::draw (CDrawContext* context)
 		context->drawBitmap (mChrome, view);
 	}
 
-	for (const auto& seg : mSegments)
-		drawSegmented (context, seg);
-	for (const auto& sl : mSliders)
-		drawSlider (context, sl);
-	for (const auto& sw : mSwitches)
-		drawSwitch (context, sw);
-	for (const auto& pill : mPills)
-		drawPill (context, pill);
+	const mac::Theme t = theme ();
+	const SkinContext sc {t, *this, mDark != 0};
 
-	drawAppearanceButton (context);
-	drawSettingsButton (context);
-	drawValueColumn (context);
-	drawGauge (context);
-	drawSettingsOverlay (context);
+	// Same per-kind pass order the six original vectors were each painted
+	// in (Segmented, Slider, Switch, Pill) -- overlapping widgets, if any
+	// ever exist, must keep painting in this priority.
+	for (const auto& w : mWidgets)
+		if (w.kind == WidgetKind::Segmented)
+			mSkin->paintWidget (context, w, sc);
+	for (const auto& w : mWidgets)
+		if (w.kind == WidgetKind::Slider)
+			mSkin->paintWidget (context, w, sc);
+	for (const auto& w : mWidgets)
+		if (w.kind == WidgetKind::Switch)
+			mSkin->paintWidget (context, w, sc);
+	for (const auto& w : mWidgets)
+		if (w.kind == WidgetKind::Pill)
+			mSkin->paintWidget (context, w, sc);
+
+	mSkin->paintAppearanceButton (context, sc);
+	mSkin->paintSettingsButton (context, sc);
+	mSkin->paintValueColumn (context, sc);
+	mSkin->paintGauge (context, sc);
+	mSkin->paintSettingsOverlay (context, getViewSize (), sc);
 
 	setDirty (false);
 }
 
-//------------------------------------------------------------------------
-// Segmented control. macOS 27 makes these capsules at Lg and XL; at Rg and
-// below the radius is height / 4. The selected chip is a raised white
-// capsule inside a recessed trough.
-//------------------------------------------------------------------------
-void RootView::drawSegmented (CDrawContext* context, const Segmented& seg) const
-{
-	const mac::Theme& t = theme ();
-	const CCoord h = seg.r.getHeight ();
-	const CCoord radius = seg.capsule ? mac::capsuleFor (h) : mac::radiusFor (h);
-
-	// Analog only means anything under Signature -- CLEAN has no mains
-	// emulation to switch, so the control reads as disabled (macOS 27's
-	// third state, just reduced opacity) instead of silently doing nothing.
-	const bool disabled = (seg.id == kParamAnalogId) &&
-	                      (stepOf (kParamModelId) != kModelSignature);
-	const double dim = disabled ? 0.4 : 1.0;
-	auto dimmed = [dim] (const CColor& c) {
-		return mac::withAlpha (c, (c.alpha / 255.0) * dim);
-	};
-
-	mac::fillSquircle (context, seg.r, radius, dimmed (t.fill2));
-
-	const int n = static_cast<int> (seg.labels.size ());
-	if (n <= 0)
-		return;
-
-	// The model switch is a wordmark as much as a control: "Glass76 CLEAN"
-	// in the same bold text as the rest of the UI, "Glass76 Signature" in a
-	// script face. Every other segmented control just uses body text.
-	const bool isModelSwitch = (seg.id == kParamModelId);
-
-	const CCoord segW = seg.r.getWidth () / static_cast<CCoord> (n);
-	const auto& fonts = mac::Fonts::get ();
-
-	// The chip glides continuously between cells on the timer-eased
-	// shownStep, rather than jumping straight from one integer index to the
-	// next -- the animated counterpart of the discrete AppKit chip.
-	{
-		const double shown = std::clamp (seg.shownStep, 0.0, static_cast<double> (n - 1));
-		CRect chip (seg.r.left + segW * shown, seg.r.top,
-		           seg.r.left + segW * (shown + 1.0), seg.r.bottom);
-		chip.inset (2.0, 2.0);
-		const CCoord chipRadius = mac::concentricRadius (radius, 2.0, chip.getHeight ());
-		if (!disabled)
-			chipShadow (context, chip, chipRadius, t.chipShadow);
-		mac::fillSquircle (context, chip, chipRadius, dimmed (t.chipFill));
-		mac::strokeSquircle (context, chip, chipRadius, dimmed (t.chipRing), 1.0);
-	}
-
-	for (int i = 0; i < n; i++)
-	{
-		CRect cell (seg.r.left + segW * i, seg.r.top,
-		            seg.r.left + segW * (i + 1), seg.r.bottom);
-
-		// Hairline between unselected segments, suppressed either side of
-		// the chip -- the same rule AppKit uses.
-		if (i > 0 && i != seg.step && i != seg.step + 1)
-		{
-			CRect divider (cell.left, cell.top + 6, cell.left + 1, cell.bottom - 6);
-			context->setFillColor (dimmed (t.label4));
-			context->drawRect (divider, kDrawFilled);
-		}
-
-		const CColor labelColor = dimmed (i == seg.step ? t.label1 : t.label2);
-
-		// "Glass76 Signature": only the "Signature" word is script -- "Glass76"
-		// stays in the same bold text every other label on the panel uses.
-		if (isModelSwitch && i == 1)
-		{
-			const std::string& label = seg.labels[i];
-			const size_t splitAt = label.find_last_of (' ');
-			const std::string head = splitAt == std::string::npos ? std::string ()
-			                                                       : label.substr (0, splitAt + 1);
-			const std::string tail = splitAt == std::string::npos ? label
-			                                                       : label.substr (splitAt + 1);
-
-			const CCoord headW = head.empty () ? 0.0 : mac::textWidth (context, head.c_str (), fonts.headline);
-			const CCoord tailW = mac::textWidth (context, tail.c_str (), fonts.signature);
-			const CCoord left = cell.left + (cell.getWidth () - (headW + tailW)) * 0.5;
-
-			if (!head.empty ())
-			{
-				CRect headRect (left, cell.top, left + headW, cell.bottom);
-				mac::drawText (context, head.c_str (), headRect, kLeftText, fonts.headline, labelColor);
-			}
-			CRect tailRect (left + headW, cell.top, left + headW + tailW, cell.bottom);
-			mac::drawText (context, tail.c_str (), tailRect, kLeftText, fonts.signature, labelColor);
-			continue;
-		}
-
-		const CFontRef font = isModelSwitch ? fonts.headline : fonts.body;
-		mac::drawText (context, seg.labels[i].c_str (), cell, kCenterText, font, labelColor);
-	}
-}
-
-//------------------------------------------------------------------------
-// Slider. Track is 6 tall at Rg and above [kit]. Detented sliders draw
-// their tick marks below the track, which is where AppKit puts them.
-//------------------------------------------------------------------------
-void RootView::drawSlider (CDrawContext* context, const Slider& sl) const
-{
-	const mac::Theme& t = theme ();
-	const CCoord trackH = mac::kSliderTrackHeight;
-	const CCoord knobD = 18.0;
-
-	const CCoord cy = (sl.detents > 0) ? sl.r.top + 9.0 : sl.r.getCenter ().y;
-	const CRect track (sl.r.left, cy - trackH * 0.5, sl.r.right, cy + trackH * 0.5);
-
-	mac::fillSquircle (context, track, trackH * 0.5, t.fill1);
-
-	// Drawn from the timer-eased shownNorm, not the raw target norm, so a
-	// programmatic jump (automation, preset recall, double-click reset)
-	// glides instead of snapping. A live drag still tracks the pointer
-	// closely -- shownNorm is re-eased every 33ms, faster than it can fall
-	// visibly behind a mouse move.
-	const CCoord travel = sl.r.getWidth () - knobD;
-	const CCoord knobX = sl.r.left + knobD * 0.5 + travel * sl.shownNorm;
-
-	// Filled portion: from the left, or from the centre for a bipolar
-	// control like Trim, where the meaningful reference is zero.
-	if (sl.bipolar)
-	{
-		const CCoord centreX = sl.r.getCenter ().x;
-		CRect filled (std::min (centreX, knobX), track.top,
-		              std::max (centreX, knobX), track.bottom);
-		if (filled.getWidth () > 1.0)
-			mac::fillSquircle (context, filled, trackH * 0.5, t.accent);
-	}
-	else
-	{
-		CRect filled (track.left, track.top, knobX, track.bottom);
-		if (filled.getWidth () > 1.0)
-			mac::fillSquircle (context, filled, trackH * 0.5, t.accent);
-	}
-
-	//--- tick marks ---------------------------------------------------
-	if (sl.detents > 1)
-	{
-		context->setFillColor (t.label3);
-		for (int i = 0; i < sl.detents; i++)
-		{
-			const double f = static_cast<double> (i) / (sl.detents - 1);
-			const CCoord x = sl.r.left + knobD * 0.5 + travel * f;
-			CRect tick (x - 0.5, sl.r.top + 21.0, x + 0.5, sl.r.top + 25.0);
-			context->drawRect (tick, kDrawFilled);
-		}
-	}
-	else if (sl.bipolar)
-	{
-		// A single centre detent, so the user can find unity by eye.
-		context->setFillColor (t.label3);
-		const CCoord x = sl.r.getCenter ().x;
-		CRect tick (x - 0.5, cy + 7.0, x + 0.5, cy + 11.0);
-		context->drawRect (tick, kDrawFilled);
-	}
-
-	//--- knob ---------------------------------------------------------
-	CRect knob (knobX - knobD * 0.5, cy - knobD * 0.5,
-	            knobX + knobD * 0.5, cy + knobD * 0.5);
-	chipShadow (context, knob, knobD * 0.5, t.chipShadow);
-	mac::fillSquircle (context, knob, knobD * 0.5, t.chipFill);
-	mac::strokeSquircle (context, knob, knobD * 0.5, t.chipRing, 1.0);
-}
-
-//------------------------------------------------------------------------
-// Switch: 54 x 24 capsule with a 32 x 20 capsule knob inset 2 [kit]. The
-// knob is a capsule, not a circle -- that is one of the details that
-// separates a 27 switch from an iOS one.
-//------------------------------------------------------------------------
-void RootView::drawSwitch (CDrawContext* context, const Switch& sw) const
-{
-	const mac::Theme& t = theme ();
-	const CCoord radius = mac::capsuleFor (sw.r.getHeight ());
-
-	// shownOn (timer-eased toward on ? 1 : 0) drives both the thumb's slide
-	// and a cross-fade of the track fill, instead of the track colour and
-	// thumb position snapping the instant the parameter flips.
-	const double f = std::clamp (sw.shownOn, 0.0, 1.0);
-	mac::fillSquircle (context, sw.r, radius, mac::mixColor (t.fill1, t.accent, f));
-
-	const CCoord travel = sw.r.getWidth () - 4.0 - mac::kSwitchKnobWidth;
-	CRect knob (sw.r.left + 2.0 + travel * f, sw.r.top + 2.0, 0, 0);
-	knob.setWidth (mac::kSwitchKnobWidth);
-	knob.setHeight (mac::kSwitchKnobHeight);
-
-	const CCoord knobRadius = mac::capsuleFor (knob.getHeight ());
-	chipShadow (context, knob, knobRadius, t.chipShadow);
-	mac::fillSquircle (context, knob, knobRadius,
-	                   mac::rgba (255, 255, 255, 0.98 + 0.02 * f));
-	mac::strokeSquircle (context, knob, knobRadius, t.chipRing, 1.0);
-}
-
-//------------------------------------------------------------------------
-// Capsule toggle button in the toolbar. It sits on glass, so it uses the
-// over-glass fill set rather than the content-area one.
-//------------------------------------------------------------------------
-void RootView::drawPill (CDrawContext* context, const Pill& pill) const
-{
-	const mac::Theme& t = theme ();
-	const CCoord radius = mac::capsuleFor (pill.r.getHeight ());
-
-	const double f = std::clamp (pill.shownOn, 0.0, 1.0);
-	mac::fillSquircle (context, pill.r, radius, mac::mixColor (t.overGlassIdle, t.accent, f));
-	mac::strokeSquircle (context, pill.r, radius, mac::withAlpha (t.chipRing, 1.0 - f), 1.0);
-
-	mac::drawText (context, pill.label.c_str (), pill.r, kCenterText,
-	               mac::Fonts::get ().body, mac::mixColor (t.label1, t.accentGlyph, f));
-}
-
-//------------------------------------------------------------------------
-// Borderless appearance toggle. Toolbar items are completely flat -- no
-// gradient, no border, no shadow. The glyph is the half-filled circle
-// macOS uses for Appearance, drawn rather than imported: SF Symbols are
-// Apple-platform licensed and cannot ship in a Windows binary.
-//------------------------------------------------------------------------
-void RootView::drawAppearanceButton (CDrawContext* context) const
-{
-	const mac::Theme& t = theme ();
-
-	CRect glyph (mAppearanceRect);
-	glyph.inset (6.0, 6.0);
-
-	auto path = VSTGUI::owned (context->createGraphicsPath ());
-	if (!path)
-		return;
-
-	// Filled half.
-	path->addArc (glyph, 90.0, 270.0, true);
-	path->closeSubpath ();
-	context->setFillColor (mac::withAlpha (t.label1, 0.70));
-	context->drawGraphicsPath (path, CDrawContext::kPathFilled);
-
-	// Outline of the whole circle.
-	auto ring = VSTGUI::owned (context->createGraphicsPath ());
-	if (ring)
-	{
-		ring->addEllipse (glyph);
-		context->setFrameColor (mac::withAlpha (t.label1, 0.70));
-		context->setLineWidth (1.5);
-		context->drawGraphicsPath (ring, CDrawContext::kPathStroked);
-	}
-}
-
-//------------------------------------------------------------------------
-// Settings button. Same borderless, flat-glyph treatment as the appearance
-// toggle: three slider tracks with knobs at different positions, drawn
-// rather than imported for the same licensing reason SF Symbols are out.
-//------------------------------------------------------------------------
-void RootView::drawSettingsButton (CDrawContext* context) const
-{
-	const mac::Theme& t = theme ();
-	const CColor c = mac::withAlpha (t.label1, 0.70);
-
-	CRect r (mSettingsButtonRect);
-	r.inset (5.0, 5.0);
-
-	context->setFrameColor (c);
-	context->setFillColor (c);
-	context->setLineWidth (1.5);
-
-	static constexpr double kKnobFrac[3] = {0.30, 0.65, 0.45};
-	const CCoord rowH = r.getHeight () / 3.0;
-
-	for (int i = 0; i < 3; i++)
-	{
-		const CCoord y = r.top + rowH * (i + 0.5);
-		context->drawLine (CPoint (r.left, y), CPoint (r.right, y));
-
-		const CCoord kx = r.left + r.getWidth () * kKnobFrac[i];
-		CRect knob (kx - 2.0, y - 2.0, kx + 2.0, y + 2.0);
-		auto path = VSTGUI::owned (context->createGraphicsPath ());
-		if (path)
-		{
-			path->addEllipse (knob);
-			context->drawGraphicsPath (path, CDrawContext::kPathFilled);
-		}
-	}
-}
-
-//------------------------------------------------------------------------
-// The settings panel. A scrim over the whole editor plus one glass card,
-// drawn live every frame rather than through the cached chrome bitmap --
-// it only exists while open, so there is nothing worth caching.
-//------------------------------------------------------------------------
-void RootView::drawSettingsOverlay (CDrawContext* context) const
-{
-	if (!mSettingsOpen)
-		return;
-
-	const mac::Theme& t = theme ();
-	const auto& fonts = mac::Fonts::get ();
-	const CRect view (getViewSize ());
-
-	context->setFillColor (mac::rgba (0, 0, 0, t.dark ? 0.55 : 0.35));
-	context->drawRect (view, kDrawFilled);
-
-	mac::drawGlassPanel (context, mSettingsCardRect, kCardRadius, t, true);
-
-	CRect title (mSettingsCardRect);
-	title.left += kCardPad;
-	title.right -= kCardPad;
-	title.top += 18;
-	title.bottom = title.top + 24;
-	mac::drawText (context, "Settings", title, kLeftText, fonts.title3, t.label1);
-
-	CRect sub (title);
-	sub.top = title.bottom;
-	sub.bottom = sub.top + 18;
-	mac::drawText (context, "Background image", sub, kLeftText, fonts.subhead, t.label2);
-
-	// Choose button.
-	{
-		const CCoord radius = mac::capsuleFor (mSettingsChooseRect.getHeight ());
-		mac::fillSquircle (context, mSettingsChooseRect, radius, t.fill2);
-		mac::strokeSquircle (context, mSettingsChooseRect, radius, t.chipRing, 1.0);
-		mac::drawText (context, "Choose Image...", mSettingsChooseRect, kCenterText,
-		              fonts.body, t.label1);
-	}
-
-	// Clear button -- reads as disabled when there is nothing to clear.
-	{
-		const CCoord radius = mac::capsuleFor (mSettingsClearRect.getHeight ());
-		const bool hasImage = (mBackgroundImage != nullptr);
-		mac::strokeSquircle (context, mSettingsClearRect, radius, t.chipRing, 1.0);
-		mac::drawText (context, "Clear", mSettingsClearRect, kCenterText,
-		              fonts.body, hasImage ? t.label1 : t.label3);
-	}
-
-	CRect pathRect (mSettingsCardRect);
-	pathRect.left += kCardPad;
-	pathRect.right -= kCardPad;
-	pathRect.top = mSettingsChooseRect.bottom + 12;
-	pathRect.bottom = pathRect.top + 16;
-	const std::string pathLabel =
-	    mBackgroundImagePath.empty () ? "No image selected" : mBackgroundImagePath;
-	mac::drawText (context, pathLabel.c_str (), pathRect, kLeftText, fonts.caption, t.label3);
-
-	CRect sep (mSettingsCardRect.left + kCardPad, pathRect.bottom + 16,
-	          mSettingsCardRect.right - kCardPad, pathRect.bottom + 17);
-	context->setFillColor (t.separator);
-	context->drawRect (sep, kDrawFilled);
-
-	CRect rateLabel (sep.left, sep.bottom + 10, sep.left + 200, sep.bottom + 28);
-	mac::drawText (context, "Refresh rate", rateLabel, kLeftText, fonts.subhead, t.label2);
-
-	static constexpr int kRateChoices[3] = {30, 60, 120};
-	for (int i = 0; i < 3; i++)
-	{
-		const CRect& r = mSettingsRateRect[i];
-		const bool selected = (mRefreshRateHz == kRateChoices[i]);
-		const CCoord radius = mac::capsuleFor (r.getHeight ());
-		if (selected)
-			mac::fillSquircle (context, r, radius, t.accent);
-		else
-			mac::strokeSquircle (context, r, radius, t.chipRing, 1.0);
-		mac::drawText (context, fmt ("%d Hz", kRateChoices[i]).c_str (), r, kCenterText,
-		              fonts.body, selected ? t.accentGlyph : t.label1);
-	}
-
-	CRect sep2 (mSettingsCardRect.left + kCardPad, mSettingsRateRect[0].bottom + 16,
-	           mSettingsCardRect.right - kCardPad, mSettingsRateRect[0].bottom + 17);
-	context->setFillColor (t.separator);
-	context->drawRect (sep2, kDrawFilled);
-
-	// Credits: a plain label, then the handle in the same body face as the
-	// rest of the panel -- no script face here, it is a name, not a signature.
-	CRect creditsLabel (sep2.left, sep2.bottom + 10, sep2.left + 60, sep2.bottom + 32);
-	mac::drawText (context, "Credits", creditsLabel, kLeftText, fonts.subhead, t.label2);
-
-	CRect creditsName (creditsLabel.right + 6, sep2.bottom + 2,
-	                   mSettingsCardRect.right - kCardPad, sep2.bottom + 36);
-	mac::drawText (context, "@jxxnmade on Instagram", creditsName, kLeftText, fonts.body, t.label1);
-
-	// Done.
-	{
-		const CCoord radius = mac::capsuleFor (mSettingsCloseRect.getHeight ());
-		mac::fillSquircle (context, mSettingsCloseRect, radius, t.accent);
-		mac::drawText (context, "Done", mSettingsCloseRect, kCenterText,
-		              fonts.body, t.accentGlyph);
-	}
-}
-
-//------------------------------------------------------------------------
-void RootView::drawValueColumn (CDrawContext* context) const
-{
-	const mac::Theme& t = theme ();
-	const auto& fonts = mac::Fonts::get ();
-
-	auto value = [&] (const CRect& r, const std::string& s) {
-		if (r.getWidth () > 0)
-			mac::drawText (context, s.c_str (), r, kRightText, fonts.body, t.label1);
-	};
-
-	value (mValueInput, gainStepText (kParamInputId));
-	value (mValueOutput, gainStepText (kParamOutputId));
-
-	// Auto make-up applies its gain inside the processor rather than moving
-	// the Output control -- driving the parameter would overwrite the
-	// setting the user dialled in and write automation. Showing the live
-	// amount underneath keeps it visible without touching their value.
-	if (mAutoMakeupOn)
-	{
-		CRect r (mValueOutput);
-		r.top = r.bottom - 2;
-		r.bottom = r.top + 14;
-		const std::string s = (mMakeupDb >= 0.05) ? fmt ("auto +%.1f", mMakeupDb) : "auto";
-		mac::drawText (context, s.c_str (), r, kRightText, fonts.caption, t.accent);
-	}
-	value (mValueAttack, attackText ());
-	value (mValueRelease, releaseText ());
-	value (mValueRatio, ratioText ());
-	value (mValueMix, mixText ());
-	value (mValueTrim, trimText ());
-}
-
-//------------------------------------------------------------------------
-// The gauge. A 240-degree arc with a 6pt track, the same weight as a
-// slider track, so the two read as one system. macOS 27 has no VU meter
-// to copy, so this follows the language of the progress and activity
-// indicators instead of imitating a painted needle.
-//------------------------------------------------------------------------
-void RootView::drawGauge (CDrawContext* context) const
-{
-	const mac::Theme& t = theme ();
-	const auto& fonts = mac::Fonts::get ();
-
-	const CPoint centre (mGaugeRect.getCenter ().x, mGaugeRect.top + 90.0);
-	const CCoord radius = 78.0;
-	const CCoord trackW = 8.0;
-
-	constexpr double kStartAngle = 150.0;
-	constexpr double kSweep = 240.0;
-
-	CRect arcRect (centre.x - radius, centre.y - radius,
-	               centre.x + radius, centre.y + radius);
-
-	context->setLineStyle (CLineStyle (CLineStyle::kLineCapRound, CLineStyle::kLineJoinRound));
-	context->setLineWidth (trackW);
-
-	//--- track --------------------------------------------------------
-	{
-		auto path = VSTGUI::owned (context->createGraphicsPath ());
-		if (path)
-		{
-			path->addArc (arcRect, kStartAngle, kStartAngle + kSweep, true);
-			context->setFrameColor (t.fill1);
-			context->drawGraphicsPath (path, CDrawContext::kPathStroked);
-		}
-	}
-
-	const int mode = stepOf (kParamMeterId);
-	const double shown = std::clamp (mGaugeShown, 0.0, 1.0);
-
-	// Red only where it means something: an output that has passed 0 dBFS.
-	const bool overs = (mode == kMeterOut) &&
-	                   (normalizedToLevelDb (shown) > 0.0);
-	const CColor arcColor = overs ? mac::rgba (255, 56, 60, 1.0) : t.accent;
-
-	//--- value arc ----------------------------------------------------
-	if (shown > 0.002)
-	{
-		auto path = VSTGUI::owned (context->createGraphicsPath ());
-		if (path)
-		{
-			path->addArc (arcRect, kStartAngle, kStartAngle + kSweep * shown, true);
-			context->setFrameColor (arcColor);
-			context->drawGraphicsPath (path, CDrawContext::kPathStroked);
-		}
-	}
-
-	//--- peak hold ----------------------------------------------------
-	if (mGaugePeak > 0.01 && mGaugePeak > shown + 0.01)
-	{
-		const double a = (kStartAngle + kSweep * mGaugePeak) * 3.14159265358979 / 180.0;
-		const CPoint p (centre.x + std::cos (a) * radius, centre.y + std::sin (a) * radius);
-		CRect dot (p.x - 2.5, p.y - 2.5, p.x + 2.5, p.y + 2.5);
-		context->setFillColor (mac::withAlpha (arcColor, 0.55));
-		auto path = VSTGUI::owned (context->createGraphicsPath ());
-		if (path)
-		{
-			path->addEllipse (dot);
-			context->drawGraphicsPath (path, CDrawContext::kPathFilled);
-		}
-	}
-
-	//--- scale ticks and their labels ---------------------------------
-	context->setLineWidth (1.0);
-	context->setLineStyle (kLineSolid);
-	for (int i = 0; i <= 4; i++)
-	{
-		const double f = i / 4.0;
-		const double a = (kStartAngle + kSweep * f) * 3.14159265358979 / 180.0;
-		const double c = std::cos (a), s = std::sin (a);
-		context->setFrameColor (t.label3);
-		context->drawLine (CPoint (centre.x + c * (radius + 8), centre.y + s * (radius + 8)),
-		                   CPoint (centre.x + c * (radius + 12), centre.y + s * (radius + 12)));
-
-		if (i == 0 || i == 2 || i == 4)
-		{
-			std::string label;
-			if (mode == kMeterGR)
-				label = (i == 0) ? "0" : fmt ("%s%d", kMinus,
-				                              static_cast<int> (kMeterGrMaxDb * f + 0.5));
-			else
-				label = fmt ("%+d", static_cast<int> (std::lround (normalizedToLevelDb (f))));
-			if (!label.empty () && label[0] == '-')
-				label = std::string (kMinus) + label.substr (1);
-
-			const CPoint lp (centre.x + c * (radius + 26), centre.y + s * (radius + 26));
-			CRect lr (lp.x - 24, lp.y - 8, lp.x + 24, lp.y + 8);
-			mac::drawText (context, label.c_str (), lr, kCenterText, fonts.caption, t.label3);
-		}
-	}
-
-	//--- centre readout -----------------------------------------------
-	{
-		double db = 0.0;
-		const char* unit = "dB GR";
-		switch (mode)
-		{
-			case kMeterGR: db = mMeterGrDb; unit = "dB GR"; break;
-			case kMeterIn: db = mMeterInDb; unit = "VU in"; break;
-			default:       db = mMeterOutDb; unit = "VU out"; break;
-		}
-
-		std::string text;
-		if (mode == kMeterGR)
-			text = (db < 0.05) ? "0.0" : fmt ("%s%.1f", kMinus, db);
-		else if (db <= kMeterLevelMinDb + 0.1)
-			text = std::string (kMinus) + kInfinity;
-		else
-			text = (db < 0.0) ? fmt ("%s%.1f", kMinus, -db) : fmt ("+%.1f", db);
-
-		CRect valueRect (centre.x - 78, centre.y - 20, centre.x + 78, centre.y + 8);
-		mac::drawText (context, text.c_str (), valueRect, kCenterText, fonts.largeTitle, t.label1);
-
-		CRect unitRect (centre.x - 78, centre.y + 12, centre.x + 78, centre.y + 28);
-		mac::drawText (context, unit, unitRect, kCenterText, fonts.subhead, t.label2);
-	}
-}
-
 //========================================================================
-// Value formatting
+// IWidgetHost: value formatting
 //========================================================================
 std::string RootView::gainStepText (ParamID id) const
 {
 	double norm = 0.0;
-	for (const auto& sl : mSliders)
-	{
-		if (sl.id == id)
-			norm = sl.norm;
-	}
+	if (const auto* sl = findWidget (id, WidgetKind::Slider))
+		norm = sl->norm;
 	const double db = normalizedToAttenuatorDb (norm);
 	if (db <= -600.0)
 		return std::string (kMinus) + kInfinity;
@@ -1485,11 +894,8 @@ std::string RootView::ratioText () const
 std::string RootView::mixText () const
 {
 	double norm = 1.0;
-	for (const auto& sl : mSliders)
-	{
-		if (sl.id == kParamMixId)
-			norm = sl.norm;
-	}
+	if (const auto* sl = findWidget (kParamMixId, WidgetKind::Slider))
+		norm = sl->norm;
 	return fmt ("%d%%", static_cast<int> (std::lround (normalizedToMixPercent (norm))));
 }
 
@@ -1497,17 +903,51 @@ std::string RootView::mixText () const
 std::string RootView::trimText () const
 {
 	double norm = 0.5;
-	for (const auto& sl : mSliders)
-	{
-		if (sl.id == kParamTrimId)
-			norm = sl.norm;
-	}
+	if (const auto* sl = findWidget (kParamTrimId, WidgetKind::Slider))
+		norm = sl->norm;
 	const double db = normalizedToTrimDb (norm);
 	if (db < -0.05)
 		return fmt ("%s%.1f dB", kMinus, -db);
 	if (db > 0.05)
 		return fmt ("+%.1f dB", db);
 	return "0.0 dB";
+}
+
+//------------------------------------------------------------------------
+const CRect& RootView::valueRect (ParamID id) const
+{
+	switch (id)
+	{
+		case kParamInputId: return mValueInput;
+		case kParamOutputId: return mValueOutput;
+		case kParamAttackId: return mValueAttack;
+		case kParamReleaseId: return mValueRelease;
+		case kParamRatioId: return mValueRatio;
+		case kParamMixId: return mValueMix;
+		case kParamTrimId: return mValueTrim;
+		default: break;
+	}
+	static const CRect empty (0, 0, 0, 0);
+	return empty;
+}
+
+//------------------------------------------------------------------------
+int RootView::meterMode () const { return stepOf (kParamMeterId); }
+
+//------------------------------------------------------------------------
+// Analog only means anything under Signature -- CLEAN has no mains
+// emulation to switch, so the control reads as disabled (macOS 27's third
+// state, just reduced opacity) instead of silently doing nothing.
+//------------------------------------------------------------------------
+bool RootView::isDisabled (const Widget& w) const
+{
+	return w.id == kParamAnalogId && stepOf (kParamModelId) != kModelSignature;
+}
+
+//------------------------------------------------------------------------
+const CRect& RootView::settingsRateRect (int index) const
+{
+	return mSettingsRateRect[std::clamp (index, 0, 2)];
 }
 
 //========================================================================
@@ -1569,57 +1009,58 @@ CMouseEventResult RootView::onMouseDown (CPoint& where, const CButtonState& butt
 		return kMouseEventHandled;
 	}
 
-	for (const auto& pill : mPills)
+	// Priority order -- Pill, Switch, Segmented, Slider -- unchanged from
+	// when these were four separate vectors: it is a click-priority rule,
+	// not an accident of storage.
+	for (const auto& w : mWidgets)
 	{
-		if (hit (pill.r, where))
-		{
-			mController->changePill (pill.id, !pill.on);
-			return kMouseEventHandled;
-		}
-	}
-
-	for (const auto& sw : mSwitches)
-	{
-		if (hit (sw.r, where))
-		{
-			mController->changePill (sw.id, !sw.on);
-			return kMouseEventHandled;
-		}
-	}
-
-	for (const auto& seg : mSegments)
-	{
-		if (!hit (seg.r, where))
+		if (w.kind != WidgetKind::Pill || !hit (w.r, where))
 			continue;
-		// Analog is inert under CLEAN -- drawn dimmed, and it stays that
-		// way rather than accepting a click that would do nothing audible.
-		if (seg.id == kParamAnalogId && stepOf (kParamModelId) != kModelSignature)
-			return kMouseEventHandled;
-		mDrag = Drag::Segment;
-		mDragId = seg.id;
-		const int n = static_cast<int> (seg.labels.size ());
-		const int index = clampIndex (
-		    static_cast<int> ((where.x - seg.r.left) / (seg.r.getWidth () / n)), n);
-		if (index != seg.step)
-			mController->changeStep (seg.id, index);
+		mController->changePill (w.id, !w.on);
 		return kMouseEventHandled;
 	}
 
-	for (auto& sl : mSliders)
+	for (const auto& w : mWidgets)
+	{
+		if (w.kind != WidgetKind::Switch || !hit (w.r, where))
+			continue;
+		mController->changePill (w.id, !w.on);
+		return kMouseEventHandled;
+	}
+
+	for (const auto& w : mWidgets)
+	{
+		if (w.kind != WidgetKind::Segmented || !hit (w.r, where))
+			continue;
+		// Analog is inert under CLEAN -- drawn dimmed, and it stays that
+		// way rather than accepting a click that would do nothing audible.
+		if (w.id == kParamAnalogId && stepOf (kParamModelId) != kModelSignature)
+			return kMouseEventHandled;
+		mDrag = Drag::Segment;
+		mDragId = w.id;
+		const int n = static_cast<int> (w.labels.size ());
+		const int index =
+		    clampIndex (static_cast<int> ((where.x - w.r.left) / (w.r.getWidth () / n)), n);
+		if (index != w.step)
+			mController->changeStep (w.id, index);
+		return kMouseEventHandled;
+	}
+
+	for (auto& w : mWidgets)
 	{
 		// Generous vertical hit area: the row, not just the 6pt track.
-		if (!hit (sl.r, where))
+		if (w.kind != WidgetKind::Slider || !hit (w.r, where))
 			continue;
 
 		if (buttons.isDoubleClick ())
 		{
-			mController->changeContinuous (sl.id, sl.defaultNorm);
+			mController->changeContinuous (w.id, w.defaultNorm);
 			return kMouseEventHandled;
 		}
 
 		mDrag = Drag::Slider;
-		mDragId = sl.id;
-		applySliderFrom (sl, where.x, buttons.getModifierState () & kShift);
+		mDragId = w.id;
+		applySliderFrom (w, where.x, buttons.getModifierState () & kShift);
 		return kMouseEventHandled;
 	}
 
@@ -1634,7 +1075,7 @@ CMouseEventResult RootView::onMouseMoved (CPoint& where, const CButtonState& but
 
 	if (mDrag == Drag::Slider)
 	{
-		if (auto* sl = findSlider (mDragId))
+		if (auto* sl = findWidget (mDragId, WidgetKind::Slider))
 		{
 			applySliderFrom (*sl, where.x, buttons.getModifierState () & kShift);
 			return kMouseEventHandled;
@@ -1642,11 +1083,11 @@ CMouseEventResult RootView::onMouseMoved (CPoint& where, const CButtonState& but
 	}
 	else if (mDrag == Drag::Segment)
 	{
-		if (auto* seg = findSegmented (mDragId))
+		if (auto* seg = findWidget (mDragId, WidgetKind::Segmented))
 		{
 			const int n = static_cast<int> (seg->labels.size ());
-			const int index = clampIndex (
-			    static_cast<int> ((where.x - seg->r.left) / (seg->r.getWidth () / n)), n);
+			const int index =
+			    clampIndex (static_cast<int> ((where.x - seg->r.left) / (seg->r.getWidth () / n)), n);
 			if (index != seg->step)
 				mController->changeStep (seg->id, index);
 			return kMouseEventHandled;
@@ -1671,7 +1112,7 @@ CMouseEventResult RootView::onMouseCancel ()
 }
 
 //------------------------------------------------------------------------
-void RootView::applySliderFrom (Slider& sl, CCoord x, bool fine)
+void RootView::applySliderFrom (Widget& sl, CCoord x, bool fine)
 {
 	if (!mController)
 		return;
