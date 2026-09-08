@@ -5,6 +5,20 @@ cmake_minimum_required(VERSION 3.25.0)
 # only affects that third-party subdirectory.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 
+# A universal binary for Intel and Apple Silicon Macs. Must be set before the
+# first project()/enable_language() call in the whole configure -- which is
+# the project(Glass76 ...) a few lines down, since that runs before the SDK's
+# own CMakeLists.txt gets a chance to. Without this, the compiler defaults to
+# whichever architecture the *building* machine is (arm64 on every current
+# GitHub Actions macOS runner), producing a plug-in that fails to load with
+# no useful error on a Mac of the other kind -- exactly what "This plugin
+# failed to load ... for an unknown reason" in FL Studio means in practice.
+# NOT CACHE: a developer building locally for their own machine only can
+# still override it with -DCMAKE_OSX_ARCHITECTURES=... on the command line.
+if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS")
+endif()
+
 # We are building one plug-in, not the whole SDK. Turning the SDK's own
 # examples off cuts the configure and build time down a lot.
 option(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES "Enable VST 3 Plug-in Examples" OFF)
