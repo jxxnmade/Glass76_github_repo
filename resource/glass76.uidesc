@@ -3,15 +3,17 @@
 	<fonts/>
 	<colors/>
 	<!-- Two templates, one per skin, each declaring its own native window
-	     size -- see Glass76Controller::createView (picks the template) and
+	     size: see Glass76Controller::createView (picks the template) and
 	     Glass76Controller::requestSkinSwitch (moves between them live via
 	     VST3Editor::exchangeView). Both minSize and maxSize are required on
 	     each: exchangeView only re-reads those two attributes off the
 	     incoming template, not size, so a template missing them would
 	     inherit whatever the previous one had and refuse to resize.
 	     autosize is set at both levels so RootView tracks this frame's real
-	     size if a host ever grants something other than what was asked for
-	     -- see RootView::updateFit. -->
+	     size if a host ever grants something other than what was asked for;
+	     see RootView::updateFit. Note for future edits: XML comments forbid
+	     two consecutive hyphens anywhere in the body (this codebase's usual
+	     prose-dash convention elsewhere), so don't reintroduce that here. -->
 	<template class="CViewContainer" mouse-enabled="true" name="view_hardware" opacity="1" origin="0, 0" size="1180, 430" minSize="1180, 430" maxSize="1180, 430" autosize="left right top bottom" transparent="true">
 		<view autosize="left right top bottom" class="CViewContainer" custom-view-name="root" mouse-enabled="true" opacity="1" origin="0, 0" size="1180, 430" transparent="true"/>
 	</template>
