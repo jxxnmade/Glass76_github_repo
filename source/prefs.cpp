@@ -10,7 +10,7 @@
 
 #include <cstdio>
 #include <cstring>
-#include <charconv>
+#include <clocale>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -18,6 +18,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <shlobj.h>
+#include <cstdlib>
 #if defined(_MSC_VER)
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "Ole32.lib")
@@ -27,6 +28,7 @@
 #include <pwd.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <xlocale.h>
 #endif
 
 namespace Jaxson {
@@ -330,6 +332,29 @@ bool skipNested (Cursor& c)
 	return false;
 }
 
+// std::from_chars's floating-point overload -- the obvious way to parse a
+// number without disturbing the C locale -- isn't available on every macOS
+// deployment target this plug-in has to build for (libc++ only added it
+// very recently there, well after the target this project otherwise needs).
+// _strtod_l / strtod_l with an explicit "C" locale get the identical
+// guarantee through the C runtime's own locale-override mechanism instead,
+// and have been available for as long as this project has supported either
+// platform. The locale handle is process-lifetime; there is no call site
+// where freeing it would be meaningful.
+#if defined(_WIN32)
+double strtodCLocale (const char* start, char** end)
+{
+	static _locale_t cLocale = _create_locale (LC_ALL, "C");
+	return _strtod_l (start, end, cLocale);
+}
+#else
+double strtodCLocale (const char* start, char** end)
+{
+	static locale_t cLocale = newlocale (LC_ALL_MASK, "C", (locale_t)nullptr);
+	return strtod_l (start, end, cLocale);
+}
+#endif
+
 bool parseNumber (Cursor& c, double& out)
 {
 	const char* start = c.p;
@@ -357,11 +382,18 @@ bool parseNumber (Cursor& c, double& out)
 		while (!c.eof () && *c.p >= '0' && *c.p <= '9')
 			++c.p;
 	}
-	// std::from_chars is locale-independent -- a host that has set the C
+	// strtodCLocale is locale-independent -- a host that has set the C
 	// locale to something with a comma decimal separator must not corrupt
-	// numeric fields the way strtod() would.
-	const auto res = std::from_chars (start, c.p, out);
-	return res.ec == std::errc {};
+	// numeric fields the way plain strtod() would. Checking the returned end
+	// pointer against c.p (rather than trusting strtod not to overrun) is
+	// what makes this as safe as std::from_chars, which is bounded by
+	// construction: the manual scan above already validated the token, but
+	// strtod itself has no notion of "stop at c.p" -- only of "stop
+	// wherever JSON's grammar for a number happens to end", which is the
+	// same place by construction, so this is really just an assertion.
+	char* parseEnd = nullptr;
+	out = strtodCLocale (start, &parseEnd);
+	return parseEnd == c.p;
 }
 
 bool parseValue (Cursor& c, Value& v)
