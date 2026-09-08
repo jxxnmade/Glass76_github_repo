@@ -133,10 +133,22 @@ jobs:
           zip -r -y -X ../../../Glass76-vst3-bundle-macos.zip Glass76.vst3
         shell: bash
 
+      # A double-clickable installer app for people who don't want to find
+      # ~/Library/Audio/Plug-Ins/VST3 themselves -- see installer/mac/.
+      - name: Build the macOS installer app
+        run: ./installer/mac/build_installer.sh --bundle-dir build/VST3/Release/Glass76.vst3
+        shell: bash
+
       - uses: actions/upload-artifact@v4
         with:
           name: Glass76-macos
           path: Glass76-vst3-bundle-macos.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Glass76-macos-installer
+          path: build/installer/Glass76-*-macos-installer.zip
           if-no-files-found: error
 
   # A single release job avoids two parallel jobs racing to create or
@@ -163,16 +175,20 @@ jobs:
           files: |
             dist/Glass76-win64/*
             dist/Glass76-macos/*
+            dist/Glass76-macos-installer/*
           body: |
             See [CHANGELOG.md](CHANGELOG.md).
 
-            **Windows.** The installer is unsigned. SmartScreen will warn on
-            first run; choose *More info* → *Run anyway*.
+            **Windows.** Run `Glass76-<version>-win64.exe`. The installer is
+            unsigned. SmartScreen will warn on first run; choose *More info*
+            → *Run anyway*.
 
-            **macOS.** Unsigned and not notarized -- there is no Apple
-            Developer Program membership behind this project. Unzip
-            `Glass76-vst3-bundle-macos.zip` into
-            `~/Library/Audio/Plug-Ins/VST3`, then either right-click
-            `Glass76.vst3` → Open once, or clear the quarantine flag Gatekeeper
-            sets on anything downloaded from a browser:
+            **macOS.** Unzip `Glass76-<version>-macos-installer.zip` and
+            double-click `Install Glass76.app` -- it copies the plug-in into
+            `~/Library/Audio/Plug-Ins/VST3` for you. Prefer to do it by hand?
+            `Glass76-vst3-bundle-macos.zip` has the bare `Glass76.vst3`.
+            Unsigned and not notarized either way -- there is no Apple
+            Developer Program membership behind this project. Gatekeeper
+            blocks anything downloaded from a browser on first launch;
+            right-click → Open once, or clear the flag directly:
             `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Glass76.vst3`

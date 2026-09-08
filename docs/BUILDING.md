@@ -177,9 +177,31 @@ What it installs:
 It refuses to run over a bundle a DAW still has loaded, rather than replacing
 half of it and leaving something broken behind.
 
-### macOS: no installer, just the bundle
+### macOS: the installer app
 
-There is no macOS installer — copy the bundle in yourself:
+```bash
+./installer/mac/build_installer.sh --build
+```
+
+Writes `build/installer/Glass76-<version>-macos-installer.zip`, containing
+`Install Glass76.app`. `--build` compiles the plug-in first (via
+`scripts/build.sh`); leave it off and pass `--bundle-dir <path>` to package a
+bundle you already have.
+
+There's no Xcode installer project behind it -- `Install Glass76.app` is a
+plain folder (`Contents/Info.plist`, `Contents/MacOS/install`,
+`Contents/Resources/Glass76.vst3`) with a shell script as its
+`CFBundleExecutable`. Finder launches it like any other app because
+LaunchServices only checks that the executable is, well, executable; nothing
+requires it to be Mach-O. Double-clicking it runs `installer/mac/install.sh`,
+which copies the bundled `Glass76.vst3` into
+`~/Library/Audio/Plug-Ins/VST3` and clears the quarantine flag. Read that
+script before trusting it — that's the entire "installer".
+
+The version comes from the same `project(Glass76 VERSION ...)` line in
+`CMakeLists.txt` as the Windows installer, so the two can't drift.
+
+Prefer to skip the app? Copy the bundle in yourself:
 
 ```bash
 cp -R build/VST3/Release/Glass76.vst3 ~/Library/Audio/Plug-Ins/VST3/
@@ -188,15 +210,17 @@ cp -R build/VST3/Release/Glass76.vst3 ~/Library/Audio/Plug-Ins/VST3/
 or run `./scripts/build.sh --install`, which does the same copy (no
 elevation needed — that folder is per-user).
 
-**Unsigned and not notarized.** There is no Apple Developer Program
-membership behind this project, so on first launch Gatekeeper will refuse to
-load a bundle that came from a browser download (it won't necessarily object
-to one you built yourself, since that never picked up the quarantine
-attribute). Either right-click `Glass76.vst3` in Finder and choose *Open*
-once, or clear the flag directly:
+**Unsigned and not notarized, installer app included.** There is no Apple
+Developer Program membership behind this project, so on first launch
+Gatekeeper will refuse to open anything that came from a browser download
+(it won't necessarily object to something you built yourself, since that
+never picked up the quarantine attribute). Either right-click it in Finder
+and choose *Open* once, or clear the flag directly:
 
 ```bash
 xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Glass76.vst3
+# or, before running it:
+xattr -dr com.apple.quarantine "build/installer/Install Glass76.app"
 ```
 
 ## Rebuilding, and FL Studio
@@ -210,11 +234,11 @@ rebuilding** or the install copy fails. After installing:
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs the whole thing on both `windows-latest` (SDK
-clone, build, validator, offline tests, installer) and `macos-latest` (SDK
-clone, build, validator, offline tests) on every push and pull request.
-Pushing a `v*` tag additionally waits for both to pass, then a third job
-uploads the Windows installer, a zipped Windows bundle, and a zipped macOS
-bundle to a single draft GitHub release.
+clone, build, validator, offline tests, NSIS installer) and `macos-latest`
+(SDK clone, build, validator, offline tests, installer app) on every push and
+pull request. Pushing a `v*` tag additionally waits for both to pass, then a
+third job uploads the Windows installer, a zipped Windows bundle, the macOS
+installer app, and a zipped macOS bundle to a single draft GitHub release.
 
 ## Troubleshooting
 

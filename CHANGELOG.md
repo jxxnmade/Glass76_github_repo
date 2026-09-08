@@ -4,7 +4,7 @@ Notable changes to Glass76. This project follows [semantic versioning](https://s
 with the caveat that the plug-in's class IDs never change — a saved project
 made with any version will always find the plug-in again.
 
-## [Unreleased]
+## [1.1.2] — 2026-09-08
 
 ### Packaging
 
@@ -19,6 +19,12 @@ made with any version will always find the plug-in again.
   `smtg_target_set_bundle`. Unsigned and not notarized — there is no Apple
   Developer Program membership behind this project, so Gatekeeper blocks the
   bundle on first launch; the release notes carry the `xattr` workaround.
+- **macOS installer app.** `installer/mac/build_installer.sh` assembles
+  `Install Glass76.app` — no Xcode project, just a folder with a shell
+  script as its `CFBundleExecutable` (see `installer/mac/install.sh`), which
+  copies `Glass76.vst3` into `~/Library/Audio/Plug-Ins/VST3` and clears the
+  quarantine flag on double-click. CI builds and uploads it on every push and
+  attaches it to tagged releases alongside the bare bundle zip.
 
 ## [1.1.1] — 2026-09-07
 
@@ -150,6 +156,7 @@ First public release.
 - Not yet verified: behaviour inside FL Studio itself, and rendering at 125 %
   and 150 % display scaling.
 
+[1.1.2]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jxxnmade/Glass76_github_repo/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jxxnmade/Glass76_github_repo/releases/tag/v1.0.0

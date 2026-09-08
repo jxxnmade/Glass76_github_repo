@@ -30,14 +30,21 @@ host scans.
 
 ### macOS
 
-Grab `Glass76-vst3-bundle-macos.zip` from the
+Grab `Glass76-<version>-macos-installer.zip` from the
 [latest release](https://github.com/jxxnmade/Glass76_github_repo/releases/latest), unzip it, and
-move `Glass76.vst3` into `~/Library/Audio/Plug-Ins/VST3`.
+double-click `Install Glass76.app`. There's no compiled installer framework
+behind it — it's a script that copies the bundle into
+`~/Library/Audio/Plug-Ins/VST3` and clears the quarantine flag for you; see
+`installer/mac/install.sh`.
 
-**Not code-signed or notarized** — there's no Apple Developer Program
-membership behind this project. Gatekeeper blocks a bundle downloaded from a
-browser on first launch; right-click it in Finder and choose *Open* once, or
-clear the flag directly:
+Prefer to drop the bundle in yourself? The release also carries
+`Glass76-vst3-bundle-macos.zip` — unzip `Glass76.vst3` into
+`~/Library/Audio/Plug-Ins/VST3` or any other folder your host scans.
+
+**Not code-signed or notarized, installer app included** — there's no Apple
+Developer Program membership behind this project. Gatekeeper blocks anything
+downloaded from a browser on first launch; right-click it in Finder and
+choose *Open* once, or clear the flag directly:
 
 ```bash
 xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Glass76.vst3
@@ -236,6 +243,7 @@ tools/offline_test.cpp   offline host that checks the DSP against the binary
 scripts/build.ps1        configure, build, validate, test, install (Windows)
 scripts/build.sh         configure, build, validate, test, install (macOS)
 installer/Glass76.nsi    the Windows installer
+installer/mac/           the macOS installer app (a script, not Xcode)
 docs/BUILDING.md         toolchain, SDK, CMake options, troubleshooting
 ```
 
