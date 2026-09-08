@@ -58,6 +58,8 @@ public:
 	                                 const VSTGUI::UIAttributes& attributes,
 	                                 const VSTGUI::IUIDescription* description,
 	                                 VSTGUI::VST3Editor* editor) override;
+	void didOpen (VSTGUI::VST3Editor* editor) override;
+	void willClose (VSTGUI::VST3Editor* editor) override;
 
 	//--- outgoing edits, called from RootView ---------------------------
 	void changeStep (Steinberg::Vst::ParamID id, int step);
@@ -102,17 +104,26 @@ public:
 	}
 
 	/** 0 = Hardware, 1 = Glass. Same story again -- a UI preference, not a
-	    parameter. Selecting a skin has no visible effect yet: the editor
-	    still always opens the one Glass layout until the per-skin resize
-	    plumbing lands. It is wired up now purely so the value round-trips
-	    through both the project state and the global preferences file from
-	    day one, and nothing has to migrate later. */
+	    parameter. The window this opens at is now real (see
+	    RootView::kPanelWidth/kHardwareWindowWidth); the *paint* stays Glass
+	    either way until the Hardware faceplate skin exists. Silent: updates
+	    the persisted value and, if an editor already has this skin's own
+	    template open, nothing else -- next open (or requestSkinSwitch)
+	    picks it up. */
 	int getSkin () const { return mSkin; }
 	void setSkin (int skin)
 	{
 		mSkin = skin ? 1 : 0;
 		markPrefsDirty ();
 	}
+
+	/** The interactive version of setSkin(): also resizes and rebuilds the
+	    currently open editor, live, against the other skin's .uidesc
+	    template -- what the settings-overlay skin toggle actually calls. A
+	    no-op if `skin` already matches, or (like setSkin()) if no editor is
+	    open yet, in which case the new value simply takes effect the next
+	    time one opens. */
+	void requestSkinSwitch (int skin);
 
 	/** Loads Documents\Glass76\preferences.json once per controller
 	    instance, applying it over whatever setState() already read from the
@@ -146,6 +157,8 @@ public:
 
 private:
 	RootView* mRoot {nullptr};
+	VSTGUI::VST3Editor* mEditor {nullptr};   // tracked via didOpen/willClose, for requestSkinSwitch
+	bool mReopenSettingsAfterSwitch {false}; // sticky settings panel across exchangeView
 	int mAppearance {1};   // dark by default
 	std::string mBackgroundImagePath;
 	int mRefreshRateHz {30};

@@ -18,15 +18,24 @@
 // outgoing edits go back out through Glass76Controller::changeStep /
 // changePill / changeContinuous.
 //
-// Layout is fixed-size for now. Per-skin native sizes (and the resize
-// negotiation with the host that goes with them) are a later stage; today
-// only the Glass skin exists, at the size it always was.
+// Design space vs. view size. Every rect buildLayout() produces lives in a
+// fixed kPanelWidth x kPanelHeight design canvas -- unchanged since before
+// skins existed. The view's actual on-screen size can now differ (the
+// Hardware and Glass .uidesc templates declare their own window sizes, and
+// a host that refuses a resize request can leave the two mismatched): mFit
+// is the CGraphicsTransform that maps design space onto whatever the real
+// view size turns out to be, scaled uniformly and centred (never clipped,
+// never stretched). It is recomputed in setViewSize(); draw() wraps every
+// paint call in it, and the mouse handlers run it in reverse before doing
+// any hit testing, so every rect elsewhere in this class -- and in a skin
+// -- can go on being written in plain design-space coordinates.
 //------------------------------------------------------------------------
 
 #pragma once
 
 #include "vstgui/lib/cview.h"
 #include "vstgui/lib/cdrawdefs.h"
+#include "vstgui/lib/cgraphicstransform.h"
 #include "vstgui/lib/cvstguitimer.h"
 #include "vstgui/lib/cbitmap.h"
 
@@ -50,11 +59,24 @@ class Glass76Controller;
 class RootView : public VSTGUI::CView, public IWidgetHost
 {
 public:
-	// The .uidesc template must declare exactly this size.
+	// The fixed design canvas buildLayout() lays every rect out in -- see
+	// the class comment. This is the Glass template's own window size too
+	// (still true today because the Glass content hasn't been rebuilt onto
+	// its own faceplate metrics yet); the Hardware template opens a
+	// different window size against this same design content until its own
+	// faceplate layout lands.
 	static constexpr VSTGUI::CCoord kPanelWidth = 880;
 	static constexpr VSTGUI::CCoord kPanelHeight = 470;
 
-	RootView (Glass76Controller* owner, const VSTGUI::CRect& size);
+	// The Hardware .uidesc template's window size -- the real target from
+	// the faceplate plan, opened early so the resize plumbing (this stage)
+	// and the faceplate paint code (a later stage) never have to touch a
+	// min/maxSize declaration twice. Until the Hardware skin exists, this
+	// template shows the Glass content letterboxed into it.
+	static constexpr VSTGUI::CCoord kHardwareWindowWidth = 1180;
+	static constexpr VSTGUI::CCoord kHardwareWindowHeight = 430;
+
+	RootView (Glass76Controller* owner, SkinId skin, const VSTGUI::CRect& size);
 	~RootView () override;
 
 	//--- incoming, from the controller ---------------------------------
@@ -76,10 +98,17 @@ public:
 	    is already running. Anything else snaps to 30. */
 	void setRefreshRateHz (int hz);
 
+	/** Opens the settings overlay. Normally reached by clicking the gear, but
+	    also called by the controller right after a skin switch rebuilds this
+	    view, to make the overlay sticky across exchangeView (see
+	    Glass76Controller::requestSkinSwitch). */
+	void openSettings ();
+
 	//--- CView ----------------------------------------------------------
 	void draw (VSTGUI::CDrawContext* context) override;
 	bool attached (VSTGUI::CView* parent) override;
 	bool removed (VSTGUI::CView* parent) override;
+	void setViewSize (const VSTGUI::CRect& rect, bool invalid = true) override;
 
 	VSTGUI::CMouseEventResult onMouseDown (VSTGUI::CPoint& where,
 	                                       const VSTGUI::CButtonState& buttons) override;
@@ -118,12 +147,17 @@ public:
 	const VSTGUI::CRect& settingsClearRect () const override { return mSettingsClearRect; }
 	const VSTGUI::CRect& settingsCloseRect () const override { return mSettingsCloseRect; }
 	const VSTGUI::CRect& settingsRateRect (int index) const override;
+	const VSTGUI::CRect& settingsSkinRect () const override { return mSettingsSkinRect; }
+	SkinId currentSkinId () const override { return mSkin->id (); }
 
 	CLASS_METHODS (RootView, VSTGUI::CView)
 
 private:
 	//--- construction ---------------------------------------------------
 	void buildLayout ();
+
+	//--- design space <-> view size -----------------------------------
+	void updateFit ();
 
 	//--- drawing --------------------------------------------------------
 	// Returned by value: when a background image supplies an accent hue
@@ -135,7 +169,6 @@ private:
 	void ensureChrome (VSTGUI::CDrawContext* context);
 
 	//--- settings panel ---------------------------------------------------
-	void openSettings ();
 	void closeSettings ();
 	void chooseBackgroundImage ();
 	void clearBackgroundImage ();
@@ -152,6 +185,10 @@ private:
 	//--- state ------------------------------------------------------------
 	Glass76Controller* mController {nullptr};
 	const ISkin* mSkin {nullptr};
+
+	// Design space -> view size, recomputed by updateFit() whenever this
+	// view's actual size changes. See the class comment.
+	VSTGUI::CGraphicsTransform mFit;
 
 	// Every widget the layout builds, in construction order. Painting and
 	// hit testing each filter this by kind, in their own priority order --
@@ -175,6 +212,7 @@ private:
 	VSTGUI::CRect mSettingsClearRect;
 	VSTGUI::CRect mSettingsCloseRect;
 	VSTGUI::CRect mSettingsRateRect[3];   // 30 / 60 / 120 Hz
+	VSTGUI::CRect mSettingsSkinRect;      // toggles Hardware <-> Glass, live
 	int mRefreshRateHz {30};
 	std::string mBackgroundImagePath;
 	VSTGUI::SharedPointer<VSTGUI::CBitmap> mBackgroundImage;

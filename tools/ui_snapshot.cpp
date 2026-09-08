@@ -82,7 +82,11 @@ bool renderAndDump (bool dark, const std::string& path, const std::string& bgIma
 		return false;
 	}
 
-	RootView view (nullptr, CRect (0, 0, RootView::kPanelWidth, RootView::kPanelHeight));
+	// SkinId::Glass: the only content that exists to snapshot. The view is
+	// constructed at exactly its design size, so RootView's design-space
+	// fit transform is the identity here -- this stays the byte-identical
+	// safety net stage 2 set up.
+	RootView view (nullptr, SkinId::Glass, CRect (0, 0, RootView::kPanelWidth, RootView::kPanelHeight));
 	view.setAppearance (dark ? 1 : 0);
 	if (!bgImagePath.empty ())
 		view.setBackgroundImagePath (bgImagePath);

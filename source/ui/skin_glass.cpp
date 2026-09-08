@@ -716,13 +716,33 @@ void GlassSkin::paintSettingsOverlay (CDrawContext* context, const CRect& view,
 	context->setFillColor (t.separator);
 	context->drawRect (sep2, kDrawFilled);
 
+	// Skin: one full-width toggle, not the picker list stage 6 replaces this
+	// with once a second real skin exists -- but real enough now to be the
+	// thing that actually drives exchangeView.
+	CRect skinLabel (sep2.left, sep2.bottom + 10, sep2.left + 200, sep2.bottom + 28);
+	mac::drawText (context, "Skin", skinLabel, kLeftText, fonts.subhead, t.label2);
+
+	const bool isGlass = (h.currentSkinId () == SkinId::Glass);
+	const CRect& skinRect = h.settingsSkinRect ();
+	{
+		const CCoord radius = mac::capsuleFor (skinRect.getHeight ());
+		mac::strokeSquircle (context, skinRect, radius, t.chipRing, 1.0);
+		mac::drawText (context, isGlass ? "Glass -- tap for Hardware" : "Hardware -- tap for Glass",
+		              skinRect, kCenterText, fonts.body, t.label1);
+	}
+
+	CRect sep3 (card.left + kCardPad, skinRect.bottom + 16, card.right - kCardPad,
+	           skinRect.bottom + 17);
+	context->setFillColor (t.separator);
+	context->drawRect (sep3, kDrawFilled);
+
 	// Credits: a plain label, then the handle in the same body face as the
 	// rest of the panel -- no script face here, it is a name, not a signature.
-	CRect creditsLabel (sep2.left, sep2.bottom + 10, sep2.left + 60, sep2.bottom + 32);
+	CRect creditsLabel (sep3.left, sep3.bottom + 10, sep3.left + 60, sep3.bottom + 32);
 	mac::drawText (context, "Credits", creditsLabel, kLeftText, fonts.subhead, t.label2);
 
-	CRect creditsName (creditsLabel.right + 6, sep2.bottom + 2, card.right - kCardPad,
-	                   sep2.bottom + 36);
+	CRect creditsName (creditsLabel.right + 6, sep3.bottom + 2, card.right - kCardPad,
+	                   sep3.bottom + 36);
 	mac::drawText (context, "@jxxnmade on Instagram", creditsName, kLeftText, fonts.body, t.label1);
 
 	// Done.

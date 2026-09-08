@@ -93,6 +93,8 @@ public:
 	virtual const VSTGUI::CRect& settingsClearRect () const = 0;
 	virtual const VSTGUI::CRect& settingsCloseRect () const = 0;
 	virtual const VSTGUI::CRect& settingsRateRect (int index) const = 0;
+	virtual const VSTGUI::CRect& settingsSkinRect () const = 0;
+	virtual SkinId currentSkinId () const = 0;
 };
 
 //------------------------------------------------------------------------

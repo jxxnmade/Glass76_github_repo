@@ -550,6 +550,16 @@ void Glass76Controller::flushPrefsNow ()
 }
 
 //------------------------------------------------------------------------
+// Each skin has its own .uidesc template -- see resource/glass76.uidesc --
+// so it can declare its own native window size. mSkin picks which one
+// opens; requestSkinSwitch() is what moves between them once an editor is
+// already up.
+//------------------------------------------------------------------------
+namespace {
+const char* templateNameFor (int skin) { return (skin == 1) ? "view_glass" : "view_hardware"; }
+} // anonymous namespace
+
+//------------------------------------------------------------------------
 IPlugView* PLUGIN_API Glass76Controller::createView (FIDString name)
 {
 	if (FIDStringsEqual (name, ViewType::kEditor))
@@ -558,16 +568,18 @@ IPlugView* PLUGIN_API Glass76Controller::createView (FIDString name)
 		// setState() at all, so this is the one call site guaranteed to run
 		// before the editor opens.
 		ensurePrefsLoaded ();
-		return new VSTGUI::VST3Editor (this, "view", "glass76.uidesc");
+		return new VSTGUI::VST3Editor (this, templateNameFor (mSkin), "glass76.uidesc");
 	}
 
 	return nullptr;
 }
 
 //------------------------------------------------------------------------
-// The .uidesc template holds one view with custom-view-name="root". The
-// SDK asks us to build it here; everything the editor draws lives inside
-// the RootView we return.
+// Both templates hold one view with custom-view-name="root" -- see
+// resource/glass76.uidesc. The SDK asks us to build it here; everything the
+// editor draws lives inside the RootView we return. Which skin (and which
+// window size) it opens at follows mSkin, not the template's own name, so
+// this and requestSkinSwitch() only ever have to agree with each other.
 //------------------------------------------------------------------------
 VSTGUI::CView* Glass76Controller::createCustomView (VSTGUI::UTF8StringPtr name,
                                                     const VSTGUI::UIAttributes& /*attributes*/,
@@ -576,8 +588,12 @@ VSTGUI::CView* Glass76Controller::createCustomView (VSTGUI::UTF8StringPtr name,
 {
 	if (name && std::strcmp (name, "root") == 0)
 	{
-		auto* root = new RootView (this, VSTGUI::CRect (0, 0, RootView::kPanelWidth,
-		                                               RootView::kPanelHeight));
+		const bool glass = (mSkin == 1);
+		const SkinId skinId = glass ? SkinId::Glass : SkinId::Hardware;
+		const VSTGUI::CCoord w = glass ? RootView::kPanelWidth : RootView::kHardwareWindowWidth;
+		const VSTGUI::CCoord h = glass ? RootView::kPanelHeight : RootView::kHardwareWindowHeight;
+
+		auto* root = new RootView (this, skinId, VSTGUI::CRect (0, 0, w, h));
 		mRoot = root;
 		root->setAppearance (mAppearance);
 		if (!mBackgroundImagePath.empty ())
@@ -591,9 +607,60 @@ VSTGUI::CView* Glass76Controller::createCustomView (VSTGUI::UTF8StringPtr name,
 			if (auto* p = parameters.getParameterByIndex (i))
 				setParamNormalized (p->getInfo ().id, p->getNormalized ());
 		}
+
+		if (mReopenSettingsAfterSwitch)
+		{
+			mReopenSettingsAfterSwitch = false;
+			root->openSettings ();
+		}
 		return root;
 	}
 	return nullptr;
+}
+
+//------------------------------------------------------------------------
+void Glass76Controller::didOpen (VSTGUI::VST3Editor* editor)
+{
+	mEditor = editor;
+}
+
+//------------------------------------------------------------------------
+void Glass76Controller::willClose (VSTGUI::VST3Editor* editor)
+{
+	if (mEditor == editor)
+		mEditor = nullptr;
+}
+
+//------------------------------------------------------------------------
+// setEditorSizeConstrains() first: exchangeView() only re-reads minSize and
+// maxSize off the new template, not its size attribute, so without this the
+// second skin would snap back to whatever the first one's constraints were
+// and read as a host bug (see the plan's "Per-skin window size" section).
+// requestRecreateView(), which exchangeView() calls, defers itself via
+// doAfterEventProcessing() while an event is in flight, so it is fine to
+// call this from RootView's own onMouseDown.
+//------------------------------------------------------------------------
+void Glass76Controller::requestSkinSwitch (int skin)
+{
+	skin = skin ? 1 : 0;
+	if (skin == mSkin)
+		return;
+
+	setSkin (skin);
+
+	if (!mEditor)
+		return;   // takes effect on the next createView() instead
+
+	// exchangeView destroys and rebuilds RootView, so capture whether the
+	// settings panel was open before that happens -- createCustomView()
+	// consumes this flag on the other side.
+	mReopenSettingsAfterSwitch = mRoot && mRoot->settingsOpen ();
+
+	const bool glass = (mSkin == 1);
+	const VSTGUI::CPoint newSize (glass ? RootView::kPanelWidth : RootView::kHardwareWindowWidth,
+	                              glass ? RootView::kPanelHeight : RootView::kHardwareWindowHeight);
+	mEditor->setEditorSizeConstrains (newSize, newSize);
+	mEditor->exchangeView (templateNameFor (mSkin));
 }
 
 //------------------------------------------------------------------------

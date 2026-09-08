@@ -30,6 +30,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -158,18 +159,19 @@ bool computeAccentHueFromImage (VSTGUI::CBitmap* bitmap, double& outHueDeg)
 //========================================================================
 // Construction
 //========================================================================
-RootView::RootView (Glass76Controller* owner, const CRect& size)
+RootView::RootView (Glass76Controller* owner, SkinId skin, const CRect& size)
 : CView (size), mController (owner)
 {
-	// Skin selection has no effect yet -- the faceplate/resize plumbing
-	// that lets a second skin actually be chosen is a later stage. Every
-	// SkinId resolves to the same Glass instance until then (see
-	// skins::get in skin_glass.cpp).
-	mSkin = &skins::get (SkinId::Glass);
+	// The paint is still always Glass -- every SkinId resolves to the same
+	// instance until the Hardware faceplate exists (see skins::get in
+	// skin_glass.cpp) -- but the window this view opens at is real from
+	// this stage on, so the id is threaded through regardless.
+	mSkin = &skins::get (skin);
 
 	setMouseEnabled (true);
 	setTransparency (false);
 	buildLayout ();
+	updateFit ();
 
 	// Seed the animated "shown" values from the targets buildLayout just set
 	// so the first frame is drawn at rest, not gliding in from zero.
@@ -419,7 +421,12 @@ void RootView::buildLayout ()
 
 	//--- settings overlay -----------------------------------------------
 	{
-		constexpr CCoord cardW = 380, cardH = 364;
+		// +85 over the pre-skin card height: one label row plus one full-width
+		// button row plus the trailing separator gap, the same rhythm the
+		// refresh-rate block above it already uses -- see the skin row below.
+		// A placeholder pending stage 6's proper skin list; it earns its
+		// keep now by being the thing that actually exercises exchangeView.
+		constexpr CCoord cardW = 380, cardH = 364 + 85;
 		const CCoord cardL = kPanelWidth * 0.5 - cardW * 0.5;
 		const CCoord cardT = kPanelHeight * 0.5 - cardH * 0.5;
 		mSettingsCardRect = R (cardL, cardT, cardL + cardW, cardT + cardH);
@@ -438,6 +445,12 @@ void RootView::buildLayout ()
 			const CCoord left = cardL + kCardPad + i * (rateW + rateGap);
 			mSettingsRateRect[i] = R (left, rateTop, left + rateW, rateTop + 32);
 		}
+
+		// Skin toggle: one full-width pill, 8px below the rate row's own
+		// label-to-button gap (rateTop + 32 rate buttons + 16+1 separator +
+		// 10 label gap + 18 label + 8 button gap).
+		const CCoord skinTop = rateTop + 32 + 17 + 10 + 18 + 8;
+		mSettingsSkinRect = R (cardL + kCardPad, skinTop, cardL + cardW - kCardPad, skinTop + 32);
 
 		mSettingsCloseRect = R (cardL + cardW - kCardPad - 90, cardT + cardH - 16 - 32,
 		                        cardL + cardW - kCardPad, cardT + cardH - 16);
@@ -595,6 +608,39 @@ void RootView::setBackgroundImagePath (const std::string& path)
 	// getState there and Glass76Controller::setBackgroundImagePath.
 	if (mController)
 		mController->setBackgroundImagePath (mBackgroundImagePath);
+}
+
+//========================================================================
+// Design space <-> view size
+//========================================================================
+void RootView::setViewSize (const CRect& rect, bool invalid)
+{
+	CView::setViewSize (rect, invalid);
+	updateFit ();
+}
+
+//------------------------------------------------------------------------
+// scale = min(w/designW, h/designH), centred -- uniform, so nothing ever
+// stretches; the smaller axis always leaves letterbox bars on the other,
+// painted with the theme's windowBg in drawChrome(). Called from the
+// constructor (once, against whatever size the .uidesc template opened
+// with) and from setViewSize() (whenever the host's real answer to a
+// resize request turns out to differ from what was asked for).
+//------------------------------------------------------------------------
+void RootView::updateFit ()
+{
+	const CRect view (getViewSize ());
+	const CCoord vw = view.getWidth ();
+	const CCoord vh = view.getHeight ();
+	if (vw <= 0 || vh <= 0)
+	{
+		mFit = CGraphicsTransform ();
+		return;
+	}
+	const double scale = std::min (vw / kPanelWidth, vh / kPanelHeight);
+	const double offsetX = (vw - kPanelWidth * scale) * 0.5;
+	const double offsetY = (vh - kPanelHeight * scale) * 0.5;
+	mFit = CGraphicsTransform (scale, 0, 0, scale, offsetX, offsetY);
 }
 
 //========================================================================
@@ -805,8 +851,27 @@ void RootView::drawChrome (CDrawContext* context)
 {
 	const mac::Theme t = theme ();
 	const CRect view (getViewSize ());
+
+	// Letterbox bars, painted at the view's real size, outside mFit -- when
+	// the view isn't exactly kPanelWidth x kPanelHeight, this is what shows
+	// either side of the scaled, centred content below rather than leaving
+	// the host's own background (or nothing) showing through.
+	context->setFillColor (t.windowBg);
+	context->drawRect (view, kDrawFilled);
+
+	const CRect design (0, 0, kPanelWidth, kPanelHeight);
 	const SkinContext sc {t, *this, mDark != 0};
-	mSkin->paintBackdrop (context, view, mWidgets, mToolbar, mTitleRect, mSubtitleRect, sc);
+
+	// Skip pushing an identity transform even though it would be a
+	// numerically inert no-op: on the Windows/Direct2D backend it still
+	// nudges the text rasteriser onto a different (correctly antialiased,
+	// but not bit-identical) code path, which would otherwise cost the
+	// no-resize case -- the overwhelming common one -- its pixel-identity
+	// snapshot guarantee for zero benefit.
+	std::optional<CDrawContext::Transform> fit;
+	if (!mFit.isInvariant ())
+		fit.emplace (*context, mFit);
+	mSkin->paintBackdrop (context, design, mWidgets, mToolbar, mTitleRect, mSubtitleRect, sc);
 }
 
 //------------------------------------------------------------------------
@@ -823,6 +888,13 @@ void RootView::draw (CDrawContext* context)
 
 	const mac::Theme t = theme ();
 	const SkinContext sc {t, *this, mDark != 0};
+	const CRect design (0, 0, kPanelWidth, kPanelHeight);
+
+	// See drawChrome()'s identical guard for why this only pushes when it
+	// actually does something.
+	std::optional<CDrawContext::Transform> fit;
+	if (!mFit.isInvariant ())
+		fit.emplace (*context, mFit);
 
 	// Same per-kind pass order the six original vectors were each painted
 	// in (Segmented, Slider, Switch, Pill) -- overlapping widgets, if any
@@ -844,7 +916,7 @@ void RootView::draw (CDrawContext* context)
 	mSkin->paintSettingsButton (context, sc);
 	mSkin->paintValueColumn (context, sc);
 	mSkin->paintGauge (context, sc);
-	mSkin->paintSettingsOverlay (context, getViewSize (), sc);
+	mSkin->paintSettingsOverlay (context, design, sc);
 
 	setDirty (false);
 }
@@ -962,8 +1034,19 @@ CMouseEventResult RootView::onMouseDown (CPoint& where, const CButtonState& butt
 	if (!buttons.isLeftButton () || !mController)
 		return kMouseEventNotHandled;
 
+	// Every rect compared against `where` below (mSettingsCloseRect, w.r,
+	// ...) is authored in design space -- undo mFit's scale-and-letterbox
+	// before hit testing against any of it.
+	mFit.inverse ().transform (where);
+
 	if (mSettingsOpen)
 	{
+		if (hit (mSettingsSkinRect, where))
+		{
+			const bool nowGlass = (mSkin->id () == SkinId::Glass);
+			mController->requestSkinSwitch (nowGlass ? 0 : 1);
+			return kMouseEventHandled;
+		}
 		if (hit (mSettingsCloseRect, where))
 		{
 			closeSettings ();
@@ -1072,6 +1155,8 @@ CMouseEventResult RootView::onMouseMoved (CPoint& where, const CButtonState& but
 {
 	if (mDrag == Drag::None || !buttons.isLeftButton () || !mController)
 		return kMouseEventNotHandled;
+
+	mFit.inverse ().transform (where);
 
 	if (mDrag == Drag::Slider)
 	{
