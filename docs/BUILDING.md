@@ -1,10 +1,12 @@
 # Building Glass76
 
-Windows x64 only. There is no macOS or Linux build — the editor is drawn
-through VSTGUI's Direct2D/DirectWrite backend and the font workaround in
-`source/ui/macdraw.cpp` is Win32-specific.
+Windows x64 and macOS (universal, via Xcode). No Linux build — VSTGUI's
+`uidescription` editor only ships Win32/Direct2D and Cocoa/CoreGraphics
+backends, and Glass76 hasn't been ported to VSTGUI's X11 support.
 
 ## What you need
+
+### Windows
 
 | | |
 |---|---|
@@ -13,6 +15,19 @@ through VSTGUI's Direct2D/DirectWrite backend and the font workaround in
 | **Git** | Only to clone the VST 3 SDK. |
 | **NSIS 3** | Only to build the installer. `winget install NSIS.NSIS` |
 | **Python 3 + Pillow** | Only to regenerate the installer icon. |
+
+### macOS
+
+| | |
+|---|---|
+| **Xcode** | Command Line Tools alone are not enough — `smtg_target_set_bundle()` (bundle identifier, version strings) only takes effect under the Xcode generator, and that needs the full Xcode.app. |
+| **CMake 3.25+** | `brew install cmake`. |
+| **Git** | Only to clone the VST 3 SDK. |
+
+The only macOS-specific source is the Windows-only font-loading workaround in
+`source/ui/macdraw.cpp`, which is compiled out (`#if WINDOWS`) rather than
+needing a macOS equivalent — VSTGUI's Cocoa backend doesn't have the
+Direct2D/DirectWrite bug it works around.
 
 ## The VST 3 SDK
 
@@ -50,6 +65,15 @@ git clone --recursive --branch v3.8.1_build_84 https://github.com/steinbergmedia
 Drop `-FetchSdk` once you have an SDK. Add `-Install` to copy the bundle into
 `C:\Program Files\Common Files\VST3` — that one needs an elevated shell.
 
+On macOS:
+
+```bash
+./scripts/build.sh --fetch-sdk --validate --test
+```
+
+Drop `--fetch-sdk` once you have an SDK. Add `--install` to copy the bundle
+into `~/Library/Audio/Plug-Ins/VST3` — no elevation needed, it's per-user.
+
 ## By hand
 
 ```powershell
@@ -57,9 +81,22 @@ cmake -S . -B build -A x64 -DGLASS76_BUILD_TESTS=ON -DSMTG_ENABLE_VST3_HOSTING_E
 cmake --build build --config Release --target Glass76
 ```
 
-The bundle lands at `build\VST3\Release\Glass76.vst3`. It is a *folder*, not a
-file — Windows shows it with a plug-in icon because of the `desktop.ini` the
-SDK writes into it.
+```bash
+cmake -S . -B build -G Xcode -DGLASS76_BUILD_TESTS=ON -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON
+cmake --build build --config Release --target Glass76
+```
+
+The bundle lands at `build/VST3/Release/Glass76.vst3` either way. On Windows
+it's a *folder*, not a file — Windows shows it with a plug-in icon because of
+the `desktop.ini` the SDK writes into it. On macOS it's a real bundle
+(`Contents/Info.plist`, `Contents/MacOS/Glass76`); Finder already knows how to
+show that as one icon.
+
+**Use the Xcode generator, not Ninja or Unix Makefiles**, on macOS.
+`smtg_target_set_bundle()` sets the bundle identifier and version strings
+through `XCODE_ATTRIBUTE_*` target properties, which only a CMake Xcode-
+generator build reads — under any other generator they're silently no-ops and
+the bundle still builds, just with CMake's bare-bones default `Info.plist`.
 
 ### CMake options
 
@@ -68,7 +105,7 @@ SDK writes into it.
 | `vst3sdk_SOURCE_DIR` | — | Path to an SDK checkout. |
 | `GLASS76_FETCH_SDK` | `OFF` | Clone the SDK into `extern/vst3sdk` if none is found. |
 | `GLASS76_SDK_TAG` | `v3.8.1_build_84` | Tag used by `GLASS76_FETCH_SDK`. |
-| `GLASS76_BUILD_TESTS` | `OFF` | Build `tools/offline_test.cpp` into `glass76_test.exe`. |
+| `GLASS76_BUILD_TESTS` | `OFF` | Build `tools/offline_test.cpp` into `glass76_test.exe` (`glass76_test` on macOS). |
 | `SMTG_ENABLE_VST3_HOSTING_EXAMPLES` | `OFF` | Also builds the SDK's `validator`. |
 | `SMTG_CREATE_PLUGIN_LINK` | `OFF` | SDK default is ON. It symlinks the bundle into the user VST3 folder after every build, which needs elevation or Developer Mode on Windows — so the build fails at the last step without them. Off here; install with `-Install` or the installer instead. |
 
@@ -91,13 +128,23 @@ cmake --build build --config Release --target glass76_test
 build\bin\Release\glass76_test.exe build\VST3\Release\Glass76.vst3
 ```
 
+```bash
+cmake --build build --config Release --target validator
+build/bin/Release/validator build/VST3/Release/Glass76.vst3
+
+cmake --build build --config Release --target glass76_test
+build/bin/Release/glass76_test build/VST3/Release/Glass76.vst3
+```
+
 The offline host loads the *built bundle*, not the source, so it catches
 packaging mistakes — a missing `.uidesc`, fonts that did not get copied — that
 a unit test linked against the same objects would sail straight past.
 
 Expected on a clean rebuild: **validator 47/47, offline host 17/17**.
 
-## The installer
+## Installing
+
+### Windows: the installer
 
 ```powershell
 .\installer\build_installer.ps1 -Build
@@ -118,7 +165,7 @@ PC" on first run. Signing needs a code-signing certificate you own:
 signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f cert.pfx build\installer\Glass76-1.0.0-win64.exe
 ```
 
-### What it installs
+What it installs:
 
 | | |
 |---|---|
@@ -130,6 +177,28 @@ signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f cert.pf
 It refuses to run over a bundle a DAW still has loaded, rather than replacing
 half of it and leaving something broken behind.
 
+### macOS: no installer, just the bundle
+
+There is no macOS installer — copy the bundle in yourself:
+
+```bash
+cp -R build/VST3/Release/Glass76.vst3 ~/Library/Audio/Plug-Ins/VST3/
+```
+
+or run `./scripts/build.sh --install`, which does the same copy (no
+elevation needed — that folder is per-user).
+
+**Unsigned and not notarized.** There is no Apple Developer Program
+membership behind this project, so on first launch Gatekeeper will refuse to
+load a bundle that came from a browser download (it won't necessarily object
+to one you built yourself, since that never picked up the quarantine
+attribute). Either right-click `Glass76.vst3` in Finder and choose *Open*
+once, or clear the flag directly:
+
+```bash
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Glass76.vst3
+```
+
 ## Rebuilding, and FL Studio
 
 FL Studio holds the DLL open for as long as it is running, so **close it before
@@ -140,10 +209,12 @@ rebuilding** or the install copy fails. After installing:
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs the whole thing on `windows-latest` — SDK
-clone (cached), build, validator, offline tests, installer — on every push and
-pull request. Pushing a `v*` tag additionally uploads the installer and a
-zipped bundle to a draft GitHub release.
+`.github/workflows/ci.yml` runs the whole thing on both `windows-latest` (SDK
+clone, build, validator, offline tests, installer) and `macos-latest` (SDK
+clone, build, validator, offline tests) on every push and pull request.
+Pushing a `v*` tag additionally waits for both to pass, then a third job
+uploads the Windows installer, a zipped Windows bundle, and a zipped macOS
+bundle to a single draft GitHub release.
 
 ## Troubleshooting
 

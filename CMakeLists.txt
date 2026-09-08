@@ -171,14 +171,31 @@ smtg_target_configure_version_file(Glass76)
 # compresses, mix/trim/attenuator behaviour, and the meter round trip.
 option(GLASS76_BUILD_TESTS "Build the offline DSP test host" OFF)
 if(GLASS76_BUILD_TESTS)
-    # module_win32.cpp and plugprovider.cpp are not in sdk_hosting; the
-    # SDK's own hosting samples compile them into the executable, so we do
-    # the same.
+    # The platform module loader and plugprovider.cpp are not in sdk_hosting;
+    # the SDK's own hosting samples (see validator/CMakeLists.txt) compile
+    # them straight into the executable, so we do the same.
+    if(SMTG_MAC)
+        set(GLASS76_TEST_MODULE_SRC
+            "${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/module_mac.mm")
+    elseif(SMTG_LINUX)
+        set(GLASS76_TEST_MODULE_SRC
+            "${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/module_linux.cpp")
+    else()
+        set(GLASS76_TEST_MODULE_SRC
+            "${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/module_win32.cpp")
+    endif()
+
     add_executable(glass76_test
         tools/offline_test.cpp
-        "${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/module_win32.cpp"
+        ${GLASS76_TEST_MODULE_SRC}
         "${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/plugprovider.cpp"
     )
+    if(SMTG_MAC)
+        set_source_files_properties(${GLASS76_TEST_MODULE_SRC} PROPERTIES
+            COMPILE_FLAGS "-fobjc-arc"
+        )
+        target_link_libraries(glass76_test PRIVATE "-framework Cocoa" "-framework CoreFoundation")
+    endif()
     target_link_libraries(glass76_test PRIVATE sdk_hosting sdk base)
     target_include_directories(glass76_test PRIVATE "${vst3sdk_SOURCE_DIR}")
     set_target_properties(glass76_test PROPERTIES
@@ -214,7 +231,12 @@ if(GLASS76_BUILD_UI_SNAPSHOT)
     )
 endif()
 
-if(SMTG_WIN)
+if(SMTG_MAC)
+    smtg_target_set_bundle(Glass76
+        BUNDLE_IDENTIFIER "com.jaxson.vst3.glass76"
+        COMPANY_NAME "jxxnmade"
+    )
+elseif(SMTG_WIN)
     target_sources(Glass76 PRIVATE
         resource/win32resource.rc
     )
@@ -222,4 +244,4 @@ if(SMTG_WIN)
         set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                      PROPERTY VS_STARTUP_PROJECT Glass76)
     endif()
-endif(SMTG_WIN)
+endif(SMTG_MAC)

@@ -1,13 +1,15 @@
 # Glass76
 
-A 1176-style FET compressor VST3 for FL Studio on Windows, with a macOS 27
-("Liquid Glass") interface drawn from Apple's own UI kit metrics.
+A 1176-style FET compressor VST3, with a macOS 27 ("Liquid Glass") interface
+drawn from Apple's own UI kit metrics. Windows x64 and macOS (universal).
 
-MIT licensed. Windows x64 only.
+MIT licensed.
 
 ![Glass76, dark appearance](docs/images/editor-dark.png)
 
 ## Install
+
+### Windows
 
 Grab `Glass76-<version>-win64.exe` from the
 [latest release](https://github.com/jxxnmade/Glass76_github_repo/releases/latest) and run it. It
@@ -23,8 +25,23 @@ In FL Studio: Options → Manage plugins → **Find installed plugins**, with
 *Rescan previously verified plugins* ticked.
 
 Prefer to drop the bundle in yourself? The release also carries
-`Glass76-vst3-bundle.zip` — unzip `Glass76.vst3` into any folder your host
-scans.
+`Glass76-vst3-bundle-win64.zip` — unzip `Glass76.vst3` into any folder your
+host scans.
+
+### macOS
+
+Grab `Glass76-vst3-bundle-macos.zip` from the
+[latest release](https://github.com/jxxnmade/Glass76_github_repo/releases/latest), unzip it, and
+move `Glass76.vst3` into `~/Library/Audio/Plug-Ins/VST3`.
+
+**Not code-signed or notarized** — there's no Apple Developer Program
+membership behind this project. Gatekeeper blocks a bundle downloaded from a
+browser on first launch; right-click it in Finder and choose *Open* once, or
+clear the flag directly:
+
+```bash
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Glass76.vst3
+```
 
 ## Build
 
@@ -34,12 +51,20 @@ cd glass76
 .\scripts\build.ps1 -FetchSdk -Validate -Test -Install
 ```
 
-`-FetchSdk` clones the VST 3 SDK (about 1 GB, once); drop it if you already
-have one. `-Install` needs an elevated shell. Full instructions, options and
-troubleshooting are in [docs/BUILDING.md](docs/BUILDING.md).
+```bash
+git clone https://github.com/jxxnmade/Glass76_github_repo
+cd glass76
+./scripts/build.sh --fetch-sdk --validate --test --install
+```
 
-Close FL Studio before rebuilding — while it is open it holds the DLL and the
-install copy fails.
+`-FetchSdk`/`--fetch-sdk` clones the VST 3 SDK (about 1 GB, once); drop it if
+you already have one. `-Install` needs an elevated shell on Windows; on macOS
+`--install` needs nothing extra, since `~/Library/Audio/Plug-Ins/VST3` is
+per-user. Full instructions, options and troubleshooting are in
+[docs/BUILDING.md](docs/BUILDING.md).
+
+Close FL Studio (or any other host) before rebuilding — while it is open it
+holds the plug-in binary and the install copy fails.
 
 ## Controls
 
@@ -162,15 +187,17 @@ Two deliberate departures, both because a plug-in window is not a macOS window:
    real macOS 27 window picks up. Without them the glass panels disappear into
    the white background.
 
-**Fonts.** SF Pro is licensed for Apple platforms and cannot ship in a Windows
-binary. Inter is the licensed substitute and **ships inside the bundle** --
-`resource/Fonts/` holds Inter and Inter Display (Regular + Bold) plus the OFL
-licence, and CMake copies them into `Contents/Resources/Fonts`, which VSTGUI
-adds to a private DirectWrite collection at start-up. Nothing has to be
-installed system-wide. `mac::Fonts::get()` resolves the text and display
-optical sizes separately -- Inter Display for 20px and up, Inter below -- and
-records what actually resolved, because a font that silently falls back breaks
-every metric while nothing errors.
+**Fonts.** SF Pro is licensed for Apple platforms only, so shipping it in a
+Windows binary isn't an option, and Inter is the licensed substitute
+everywhere for consistency between the two builds. Inter **ships inside the
+bundle** -- `resource/Fonts/` holds Inter and Inter Display (Regular + Bold)
+plus the OFL licence, and CMake copies them into `Contents/Resources/Fonts`.
+On Windows, VSTGUI adds that folder to a private DirectWrite collection at
+start-up; on macOS its Cocoa backend registers them with CoreText the same
+way. Either way nothing has to be installed system-wide. `mac::Fonts::get()`
+resolves the text and display optical sizes separately -- Inter Display for
+20px and up, Inter below -- and records what actually resolved, because a
+font that silently falls back breaks every metric while nothing errors.
 
 The "Glass76 Signature" wordmark uses **Allura**, a genuine script face
 bundled the same way and under the same OFL, rather than gambling on whichever
@@ -178,8 +205,11 @@ cursive font happens to be installed -- it is first in the fallback chain,
 ahead of Segoe Script and the other system substitutes, so the signature
 renders identically on every machine.
 
-> **Upstream VSTGUI bug, worked around in `ui/macdraw.cpp`.** Bundled fonts do
-> not load in *any* VST3 plug-in as shipped. `setupVSTGUIBundleSupport()` passes
+> **Upstream VSTGUI bug, worked around in `ui/macdraw.cpp`, Windows only.**
+> Bundled fonts do not load in *any* Windows VST3 plug-in as shipped -- the
+> bug is in D2DFont, which the Cocoa/CoreText backend macOS builds use
+> doesn't have, so the workaround is compiled out there (`#if WINDOWS`).
+> `setupVSTGUIBundleSupport()` passes
 > `Win32Factory::setResourceBasePath()` a path with no trailing separator
 > (`...\Contents\Resources`). `setBasePath()` normalises it for resource
 > loading, but the **raw** string is what reaches `D2DFont::initialize()`, which
@@ -203,7 +233,8 @@ source/ui/editor.*       RootView: the whole editor, laid out and painted
 resource/glass76.uidesc  a one-view template; RootView is substituted into it
 resource/Fonts/          Inter, Inter Display + Allura, shipped in the bundle
 tools/offline_test.cpp   offline host that checks the DSP against the binary
-scripts/build.ps1        configure, build, validate, test, install
+scripts/build.ps1        configure, build, validate, test, install (Windows)
+scripts/build.sh         configure, build, validate, test, install (macOS)
 installer/Glass76.nsi    the Windows installer
 docs/BUILDING.md         toolchain, SDK, CMake options, troubleshooting
 ```
@@ -226,11 +257,16 @@ of reduction, that 20:1 reduces more, Comp Off, auto make-up, Mix at 0 %, Trim
 ±6 dB, the −∞ and 0 dB attenuator detents, the analog hum floor, and the meter
 round trip.
 
-Current status: **validator 47/47, offline host 17/17**, from a clean rebuild.
-CI runs both on every push.
+Current status: **validator 47/47, offline host 17/17**, from a clean rebuild
+on both Windows and macOS. CI runs both platforms' full suite on every push.
 
-Not yet verified: behaviour inside FL Studio itself, and rendering at 125 % /
-150 % display scaling. Reports on either are welcome.
+Verified inside a real DAW: FL Studio on Windows only, so far -- the plug-in
+scans, loads, and all three meters track audio there. The macOS build passes
+CI (validator + offline host against the built bundle) but hasn't yet been
+run inside an actual Mac host; there's no Mac available to this project to
+check that on. Not yet verified on either platform: rendering at 125 % / 150 %
+(Windows) or Retina (macOS) display scaling. Reports on any of this are
+welcome.
 
 ## Contributing
 

@@ -5,7 +5,12 @@
 #include "macdraw.h"
 
 #include "vstgui/lib/platform/platformfactory.h"
+// WINDOWS/MAC/LINUX come from vstguibase.h (via theme.h -> vstgui/vstgui.h),
+// defined only on their own platform, so an #if on any of them is 0 elsewhere
+// even though the macro itself is never defined on the other platforms.
+#if WINDOWS
 #include "vstgui/lib/platform/win32/win32factory.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -349,8 +354,10 @@ void applyAccentHue (Theme& t, double hueDeg)
 const Fonts& Fonts::get ()
 {
 	static Fonts fonts = [] () {
+#if WINDOWS
 		// Work around an upstream VSTGUI bug that silently disables bundled
-		// fonts in every VST3 plug-in.
+		// fonts in every VST3 plug-in, on Windows only -- the bug is in
+		// D2DFont, which macOS's CoreText backend does not use.
 		//
 		// setupVSTGUIBundleSupport() hands Win32Factory::setResourceBasePath()
 		// a path with no trailing separator ("...\Contents\Resources").
@@ -368,6 +375,7 @@ const Fonts& Fonts::get ()
 			if (auto base = win32->getResourceBasePath ())
 				win32->setResourceBasePath (*base);
 		}
+#endif
 
 		std::vector<std::string> available;
 		getPlatformFactory ().getAllFontFamilies ([&] (const std::string& name) {

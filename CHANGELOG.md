@@ -4,6 +4,22 @@ Notable changes to Glass76. This project follows [semantic versioning](https://s
 with the caveat that the plug-in's class IDs never change — a saved project
 made with any version will always find the plug-in again.
 
+## [Unreleased]
+
+### Packaging
+
+- **macOS build.** `.github/workflows/ci.yml` now also builds Glass76 on
+  `macos-latest` (Xcode generator), runs the SDK validator and the offline
+  DSP host against it, and packages `Glass76-vst3-bundle-macos.zip` alongside
+  the Windows installer on tagged releases. The Windows-only font-loading
+  workaround and the offline test host's platform module loader in
+  `source/ui/macdraw.cpp` / `CMakeLists.txt` are now correctly scoped behind
+  `WINDOWS` / `SMTG_MAC` / `SMTG_LINUX` instead of being compiled
+  unconditionally, and the plug-in target picks up a bundle identifier via
+  `smtg_target_set_bundle`. Unsigned and not notarized — there is no Apple
+  Developer Program membership behind this project, so Gatekeeper blocks the
+  bundle on first launch; the release notes carry the `xattr` workaround.
+
 ## [1.1.1] — 2026-09-07
 
 ### Plug-in

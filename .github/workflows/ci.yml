@@ -15,11 +15,6 @@ jobs:
   windows:
     runs-on: windows-latest
 
-    # GITHUB_TOKEN is read-only by default in repositories created since 2023,
-    # which is enough to build but makes the release step 403 on a tag push.
-    permissions:
-      contents: write
-
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +25,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: extern/vst3sdk
-          key: vst3sdk-${{ env.SDK_TAG }}
+          key: vst3sdk-${{ env.SDK_TAG }}-win
 
       - name: Clone the VST 3 SDK
         if: steps.sdk-cache.outputs.cache-hit != 'true'
@@ -74,7 +69,7 @@ jobs:
       - name: Package the bare bundle
         run: >
           Compress-Archive -Path build\VST3\Release\Glass76.vst3
-          -DestinationPath build\installer\Glass76-vst3-bundle.zip
+          -DestinationPath build\installer\Glass76-vst3-bundle-win64.zip
         shell: pwsh
 
       - uses: actions/upload-artifact@v4
@@ -83,16 +78,101 @@ jobs:
           path: build/installer/*
           if-no-files-found: error
 
-      # Tag pushes get a draft release; the notes are written by hand from
-      # CHANGELOG.md before publishing.
+  macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the VST 3 SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: extern/vst3sdk
+          key: vst3sdk-${{ env.SDK_TAG }}-mac
+
+      - name: Clone the VST 3 SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: >
+          git clone --depth 1 --recurse-submodules --shallow-submodules
+          --branch ${{ env.SDK_TAG }}
+          https://github.com/steinbergmedia/vst3sdk.git extern/vst3sdk
+
+      # The Xcode generator is what smtg_target_set_bundle() (bundle
+      # identifier, company name, version strings in Info.plist) actually
+      # applies to -- those properties are no-ops under Ninja/Make.
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Xcode
+          -DGLASS76_BUILD_TESTS=ON
+          -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON
+
+      - name: Build the plug-in
+        run: cmake --build build --config Release --target Glass76
+
+      - name: Build the validator and the offline test host
+        run: |
+          cmake --build build --config Release --target validator
+          cmake --build build --config Release --target glass76_test
+
+      # Covers the plug-in contract: parameters, state, buses, the editor.
+      - name: Validator
+        run: build/bin/Release/validator build/VST3/Release/Glass76.vst3
+
+      # Covers the DSP, against the built bundle rather than the sources, so
+      # packaging mistakes fail here too.
+      - name: Offline DSP tests
+        run: build/bin/Release/glass76_test build/VST3/Release/Glass76.vst3
+
+      # -y stores the bundle's own symlinks as symlinks rather than
+      # following them -- harmless here, but the safe default for any
+      # macOS bundle directory.
+      - name: Package the bare bundle
+        run: |
+          cd build/VST3/Release
+          zip -r -y -X ../../../Glass76-vst3-bundle-macos.zip Glass76.vst3
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Glass76-macos
+          path: Glass76-vst3-bundle-macos.zip
+          if-no-files-found: error
+
+  # A single release job avoids two parallel jobs racing to create or
+  # update the same draft release out from under each other.
+  release:
+    needs: [windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    # GITHUB_TOKEN is read-only by default in repositories created since 2023,
+    # which is enough to build but makes this step 403 on a tag push.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
       - name: Draft release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: build/installer/*
+          files: |
+            dist/Glass76-win64/*
+            dist/Glass76-macos/*
           body: |
             See [CHANGELOG.md](CHANGELOG.md).
 
-            **The installer is unsigned.** SmartScreen will warn on first run;
-            choose *More info* → *Run anyway*.
+            **Windows.** The installer is unsigned. SmartScreen will warn on
+            first run; choose *More info* → *Run anyway*.
+
+            **macOS.** Unsigned and not notarized -- there is no Apple
+            Developer Program membership behind this project. Unzip
+            `Glass76-vst3-bundle-macos.zip` into
+            `~/Library/Audio/Plug-Ins/VST3`, then either right-click
+            `Glass76.vst3` → Open once, or clear the quarantine flag Gatekeeper
+            sets on anything downloaded from a browser:
+            `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Glass76.vst3`
