@@ -19,6 +19,20 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS")
 endif()
 
+# Same failure mode as the architecture mismatch above, different cause: left
+# unset, CMake stamps the *building* machine's own SDK version into the
+# bundle's LSMinimumSystemVersion/LC_BUILD_VERSION -- on a GitHub Actions
+# macos-latest runner, whatever the newest macOS happens to be the week the
+# workflow runs. A user on any older (or just not bleeding-edge) macOS then
+# gets the exact same "This plugin failed to load ... for an unknown reason"
+# from FL Studio, and the requirement silently creeps upward on every runner
+# image update -- confirmed live: a CI build picked up 26.5 and refused to
+# load on an Intel Mac. 10.15 (Catalina) is the actual floor: it is the first
+# SDK with full libc++ std::filesystem support, which prefs.cpp depends on.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version")
+endif()
+
 # We are building one plug-in, not the whole SDK. Turning the SDK's own
 # examples off cuts the configure and build time down a lot.
 option(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES "Enable VST 3 Plug-in Examples" OFF)
