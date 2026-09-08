@@ -4,7 +4,23 @@ Notable changes to Glass76. This project follows [semantic versioning](https://s
 with the caveat that the plug-in's class IDs never change — a saved project
 made with any version will always find the plug-in again.
 
-## [1.1.2] — 2026-09-08
+## [Unreleased]
+
+### Plug-in
+
+- **Global preferences file**, `~/Documents/Glass76/preferences.json`
+  (`%USERPROFILE%\Documents\Glass76\` on Windows, via `SHGetKnownFolderPath`
+  so a OneDrive-relocated Documents folder still resolves correctly).
+  Appearance, background image and refresh rate now follow the user across
+  every project and instance instead of resetting to per-project state;
+  writes are debounced (~500 ms off the existing UI timer) and flushed
+  unconditionally when the editor closes. See `source/prefs.h`.
+- **Skin preference (plumbing only, not yet visible).** A `skin` field
+  ("hardware" | "glass") now round-trips through both project state and the
+  new preferences file, but there is no UI to select it yet and no second
+  layout to switch to — the editor still always opens the one Glass layout.
+  Wired up now so the value has somewhere to live before the per-skin
+  resize work lands, not because switching skins does anything yet.
 
 ### Packaging
 

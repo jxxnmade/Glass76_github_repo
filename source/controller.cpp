@@ -5,12 +5,14 @@
 #include "controller.h"
 #include "cids.h"
 #include "params.h"
+#include "prefs.h"
 #include "ui/editor.h"
 
 #include "base/source/fstreamer.h"
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/base/ustring.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -216,6 +218,7 @@ tresult PLUGIN_API Glass76Controller::initialize (FUnknown* context)
 //------------------------------------------------------------------------
 tresult PLUGIN_API Glass76Controller::terminate ()
 {
+	flushPrefsNow ();
 	mRoot = nullptr;
 	return EditControllerEx1::terminate ();
 }
@@ -382,45 +385,76 @@ void Glass76Controller::changeContinuous (ParamID id, double normalized)
 
 //------------------------------------------------------------------------
 // Controller-only state: the light/dark preference, the background image
-// path, and the UI refresh rate. Versioned separately from the processor
-// state so the two can evolve independently. The image path and refresh
-// rate were both added after ship; a stream that ends early (an older save)
-// just leaves the rest at their defaults.
+// path, the UI refresh rate, and (added here) the selected skin. Versioned
+// separately from the processor state so the two can evolve independently.
+// Every field after appearance was added after ship; a stream that ends
+// early (an older save) just leaves the rest at their defaults -- each read
+// stays behind its own `if (streamer.readXxx(...))`, so nothing new here
+// breaks a project saved by an older build, and an older build still opens
+// a project saved by this one.
+//
+// Precedence: Documents\Glass76\preferences.json, when it can be read, is
+// what actually takes effect -- these settings are meant to follow the
+// user across every project and instance, not reset every time a different
+// project is opened. What is read from the stream below is therefore only
+// a fallback, applied exclusively when ensurePrefsLoaded() could not read
+// the global file this run (e.g. a locked-down or offline machine). See
+// prefs.h for the file itself.
 //------------------------------------------------------------------------
 tresult PLUGIN_API Glass76Controller::setState (IBStream* state)
 {
 	if (!state)
 		return kResultTrue;
 
+	// Some hosts call setState before createView, some after -- make sure
+	// the global file has had its one chance to load either way.
+	ensurePrefsLoaded ();
+
 	IBStreamer streamer (state, kLittleEndian);
+
 	int32 appearance = 0;
-	if (streamer.readInt32 (appearance))
-	{
-		mAppearance = appearance ? 1 : 0;
-		if (mRoot)
-			mRoot->setAppearance (mAppearance);
-	}
+	const bool haveAppearance = streamer.readInt32 (appearance);
 
 	int32 pathLen = 0;
+	std::string path;
+	bool havePath = false;
 	if (streamer.readInt32 (pathLen) && pathLen >= 0 && pathLen < 4096)
 	{
-		std::string path (static_cast<size_t> (pathLen), '\0');
+		path.assign (static_cast<size_t> (pathLen), '\0');
 		if (pathLen == 0 || streamer.readRaw (path.data (), pathLen) == pathLen)
+			havePath = true;
+	}
+
+	int32 refreshRateHz = 0;
+	const bool haveRefresh = streamer.readInt32 (refreshRateHz);
+
+	// Appended for the skin feature. Older streams simply end before this
+	// point, so haveSkin is false and the built-in Hardware default holds.
+	int32 skinId = 0;
+	const bool haveSkin = streamer.readInt32 (skinId);
+
+	if (!mPrefsLoaded)
+	{
+		if (haveAppearance)
+		{
+			mAppearance = appearance ? 1 : 0;
+			if (mRoot)
+				mRoot->setAppearance (mAppearance);
+		}
+		if (havePath)
 		{
 			mBackgroundImagePath = path;
 			if (mRoot)
 				mRoot->setBackgroundImagePath (mBackgroundImagePath);
 		}
-	}
-
-	// Added after ship, same as the background image path -- a stream that
-	// ends here (an older save) just keeps the 30 Hz default.
-	int32 refreshRateHz = 0;
-	if (streamer.readInt32 (refreshRateHz))
-	{
-		setRefreshRateHz (refreshRateHz);
-		if (mRoot)
-			mRoot->setRefreshRateHz (mRefreshRateHz);
+		if (haveRefresh)
+		{
+			mRefreshRateHz = (refreshRateHz == 60 || refreshRateHz == 120) ? refreshRateHz : 30;
+			if (mRoot)
+				mRoot->setRefreshRateHz (mRefreshRateHz);
+		}
+		if (haveSkin)
+			mSkin = skinId ? 1 : 0;
 	}
 
 	return kResultTrue;
@@ -439,14 +473,93 @@ tresult PLUGIN_API Glass76Controller::getState (IBStream* state)
 		streamer.writeRaw (mBackgroundImagePath.data (),
 		                   static_cast<int32> (mBackgroundImagePath.size ()));
 	streamer.writeInt32 (mRefreshRateHz);
+	streamer.writeInt32 (mSkin);
 	return kResultTrue;
+}
+
+//------------------------------------------------------------------------
+void Glass76Controller::ensurePrefsLoaded ()
+{
+	if (mPrefsLoaded)
+		return;
+
+	Glass76Prefs p;
+	if (!prefs::load (p))
+		return;   // stays false; the next caller (there are only ever one
+		          // or two) gets another chance rather than giving up for
+		          // the life of the instance
+
+	mPrefsLoaded = true;
+	mAppearance = (p.appearance == "light") ? 0 : 1;
+	mBackgroundImagePath = p.backgroundImage;
+	mRefreshRateHz = (p.refreshRateHz == 60 || p.refreshRateHz == 120) ? p.refreshRateHz : 30;
+	mSkin = (p.skin == "glass") ? 1 : 0;
+
+	if (mRoot)
+	{
+		mRoot->setAppearance (mAppearance);
+		mRoot->setBackgroundImagePath (mBackgroundImagePath);
+		mRoot->setRefreshRateHz (mRefreshRateHz);
+	}
+}
+
+//------------------------------------------------------------------------
+void Glass76Controller::flushPrefsIfDue ()
+{
+	if (!mPrefsDirty || !mPrefsWritable)
+		return;
+
+	// A tick count rather than a wall clock, so the ~500 ms debounce holds
+	// regardless of whether the editor is redrawing at 30, 60 or 120 Hz.
+	const int ticksFor500ms = std::max (1, mRefreshRateHz / 2);
+	if (++mPrefsDirtyTicks < ticksFor500ms)
+		return;
+
+	flushPrefsNow ();
+}
+
+//------------------------------------------------------------------------
+void Glass76Controller::flushPrefsNow ()
+{
+	if (!mPrefsDirty || !mPrefsWritable)
+		return;
+
+	Glass76Prefs p;
+	p.version = 1;
+	p.skin = (mSkin == 1) ? "glass" : "hardware";
+	p.appearance = mAppearance ? "dark" : "light";
+	p.refreshRateHz = mRefreshRateHz;
+	p.backgroundImage = mBackgroundImagePath;
+
+	mPrefsDirty = false;
+	mPrefsDirtyTicks = 0;
+
+	if (prefs::save (p))
+	{
+		// Our own write makes the file current -- no reason to keep treating
+		// it as "not yet successfully loaded" for the rest of this instance.
+		mPrefsLoaded = true;
+	}
+	else
+	{
+		// Documents is unwritable (locked-down machine, read-only mount, a
+		// scanner holding the file). Stop retrying every tick; the
+		// per-project state stream above still works as a fallback.
+		mPrefsWritable = false;
+	}
 }
 
 //------------------------------------------------------------------------
 IPlugView* PLUGIN_API Glass76Controller::createView (FIDString name)
 {
 	if (FIDStringsEqual (name, ViewType::kEditor))
+	{
+		// A fresh instance with no saved project state never calls
+		// setState() at all, so this is the one call site guaranteed to run
+		// before the editor opens.
+		ensurePrefsLoaded ();
 		return new VSTGUI::VST3Editor (this, "view", "glass76.uidesc");
+	}
 
 	return nullptr;
 }

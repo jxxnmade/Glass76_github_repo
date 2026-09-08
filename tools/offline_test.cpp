@@ -25,7 +25,9 @@
 #include "public.sdk/source/vst/utility/stringconvert.h"
 
 #include "../source/params.h"
+#include "../source/prefs.h"
 
+#include <clocale>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -891,6 +893,186 @@ int runComparison (const char* glassPath, const char* wavesPath)
 	return 0;
 }
 
+//------------------------------------------------------------------------
+// prefs.h/.cpp has no VSTGUI dependency, so its JSON reader/writer is
+// tested directly here rather than only through the running plug-in. The
+// pure parse()/serialize() cases below touch no filesystem at all; the
+// last one exercises the real load()/save()/mtime() path against whatever
+// Documents folder this machine actually has.
+//------------------------------------------------------------------------
+bool runPrefsTests ()
+{
+	using namespace Jaxson;
+	const int before = gFailures;
+
+	std::printf ("\nPreferences JSON\n");
+
+	//--- round trip -------------------------------------------------------
+	{
+		Glass76Prefs p;
+		p.version = 1;
+		p.skin = "glass";
+		p.appearance = "light";
+		p.refreshRateHz = 120;
+		p.backgroundImage = "C:\\Users\\jaxson\\Pictures\\wall.png";
+
+		const std::string json = prefs::serialize (p);
+		Glass76Prefs back;
+		const bool ok = prefs::parse (json, back);
+		check (ok && back.version == p.version && back.skin == p.skin &&
+		           back.appearance == p.appearance && back.refreshRateHz == p.refreshRateHz &&
+		           back.backgroundImage == p.backgroundImage,
+		       "round trip preserves every field, including a backslash path", json);
+	}
+
+	//--- empty object: a successful parse, holding the struct's own -------
+	// defaults. parse() always fills `out` from a fresh Glass76Prefs{} on
+	// success -- it is `false` (a malformed file) that must never touch
+	// `out` at all, not a well-formed-but-empty object.
+	{
+		Glass76Prefs p;
+		p.skin = "sentinel";
+		const bool ok = prefs::parse ("{}", p);
+		check (ok && p.skin == Glass76Prefs {}.skin, "empty object parses ok, holding built-in defaults");
+	}
+
+	//--- missing file entirely: distinct from a malformed one -------------
+	{
+		Glass76Prefs p;
+		const bool ok = prefs::parse ("", p);
+		check (!ok, "empty string is not a valid object");
+	}
+
+	//--- unknown keys are ignored, not fatal -------------------------------
+	{
+		Glass76Prefs p;
+		const bool ok = prefs::parse (
+		    R"({"skin":"glass","unknownKey":"ignored","anotherOne":42})", p);
+		check (ok && p.skin == "glass", "unknown keys are ignored rather than rejected");
+	}
+
+	//--- a future version's nested object/array fields are skipped --------
+	// This is the forward-compat hatch: a later build might add
+	// "skins": { "hardware": {...} } and today's binary must still read
+	// everything it understands out of the rest of the file.
+	{
+		Glass76Prefs p;
+		const bool ok = prefs::parse (
+		    R"({"future":{"a":[1,2,{"b":"c\"d"}],"c":{}},)"
+		    R"("skin":"hardware","trailingArray":[1,[2,3],"x"]})",
+		    p);
+		check (ok && p.skin == "hardware",
+		       "a nested object/array field is skipped, not a parse error");
+	}
+
+	//--- trailing comma before the closing brace ---------------------------
+	{
+		Glass76Prefs p;
+		const bool ok = prefs::parse (R"({"skin":"glass","appearance":"dark",})", p);
+		check (ok && p.skin == "glass" && p.appearance == "dark",
+		       "a trailing comma before '}' is tolerated");
+	}
+
+	//--- a UTF-8 BOM ahead of the object ------------------------------------
+	{
+		Glass76Prefs p;
+		const std::string withBom = "\xEF\xBB\xBF" R"({"skin":"glass"})";
+		const bool ok = prefs::parse (withBom, p);
+		check (ok && p.skin == "glass", "a leading UTF-8 BOM is skipped");
+	}
+
+	//--- an unrecognised escape keeps its literal character, not the file -
+	// A hand-edited preferences.json with a single backslash (rather than
+	// our own writer's doubled "\\\\") must not corrupt the rest of the
+	// object -- only the malformed run inside that one string is affected.
+	{
+		Glass76Prefs p;
+		const bool ok = prefs::parse (R"({"backgroundImage":"C:\Users\jaxson","skin":"glass"})", p);
+		check (ok && p.skin == "glass" && p.backgroundImage == "C:Usersjaxson",
+		       "an unrecognised \\U / \\j escape degrades to the literal letter",
+		       p.backgroundImage);
+	}
+
+	//--- numbers parse correctly under a comma-decimal C locale -----------
+	// std::from_chars is locale-independent by design; strtod() is not, and
+	// a host that has changed the C locale would otherwise corrupt this.
+	{
+		const char* prevLocale = std::setlocale (LC_NUMERIC, nullptr);
+		const std::string saved = prevLocale ? prevLocale : "C";
+		std::setlocale (LC_NUMERIC, "German");   // no-op if this build has no such locale
+
+		Glass76Prefs p;
+		const bool ok = prefs::parse (R"({"version":1.0,"refreshRateHz":60,"skin":"glass"})", p);
+		check (ok && p.refreshRateHz == 60 && p.skin == "glass",
+		       "numeric fields parse correctly under a comma-decimal locale");
+
+		std::setlocale (LC_NUMERIC, saved.c_str ());
+	}
+
+	//--- truncated file -----------------------------------------------------
+	{
+		Glass76Prefs p;
+		const bool ok = prefs::parse (R"({"skin": "glass")", p);   // missing closing brace
+		check (!ok, "a truncated object is rejected, not partially applied");
+	}
+
+	//--- garbage file ---------------------------------------------------
+	{
+		Glass76Prefs p;
+		check (!prefs::parse ("not json at all", p), "non-JSON text is rejected");
+		check (!prefs::parse (std::string ("\x00\x01\x02", 3), p), "binary garbage is rejected");
+	}
+
+	//--- refreshRateHz outside {30,60,120} is not silently accepted -------
+	// prefs::parse() itself is a pure field copy (snapping is the loader's
+	// job, matching RootView::setRefreshRateHz / the controller's own
+	// setter) -- this just confirms the raw value round-trips so the
+	// caller-side snap has something correct to snap.
+	{
+		Glass76Prefs p;
+		const bool ok = prefs::parse (R"({"refreshRateHz":45})", p);
+		check (ok && p.refreshRateHz == 45,
+		       "an out-of-set refresh rate still parses -- snapping is the loader's job, not parse()'s");
+	}
+
+	//--- the real filesystem path: save, then load back -------------------
+	// Exercises path resolution, atomic write, and mtime() together. Skips
+	// itself (without counting as a failure) on a machine where Documents
+	// could not be resolved at all -- prefs::dir() returning empty is a
+	// documented, handled condition, not a bug.
+	{
+		if (prefs::dir ().empty ())
+		{
+			std::printf ("  [skip] filesystem round trip -- Documents could not be resolved here\n");
+		}
+		else
+		{
+			Glass76Prefs p;
+			p.version = 1;
+			p.skin = "hardware";
+			p.appearance = "dark";
+			p.refreshRateHz = 30;
+			p.backgroundImage.clear ();
+
+			const int64_t before64 = prefs::mtime ();
+			const bool saved = prefs::save (p);
+			check (saved, "save() writes preferences.json", prefs::path ());
+
+			Glass76Prefs back;
+			const bool loaded = saved && prefs::load (back);
+			check (loaded && back.skin == p.skin && back.appearance == p.appearance &&
+			           back.refreshRateHz == p.refreshRateHz,
+			       "load() reads back exactly what save() wrote");
+
+			const int64_t after64 = prefs::mtime ();
+			check (!saved || after64 != 0, "mtime() reports a write time after save()");
+			(void) before64;
+		}
+	}
+
+	return gFailures == before;
+}
+
 } // anonymous namespace
 
 //------------------------------------------------------------------------
@@ -900,8 +1082,14 @@ int main (int argc, char* argv[])
 	{
 		std::printf ("usage: glass76_test <path to Glass76.vst3>\n");
 		std::printf ("       glass76_test --list <path to any .vst3>\n");
+		std::printf ("       glass76_test --prefs-test\n");
 		return 2;
 	}
+
+	// --prefs-test: exercises prefs.h/.cpp directly. No .vst3 needed -- this
+	// is pure C++ with no VSTGUI or host dependency at all.
+	if (std::string (argv[1]) == "--prefs-test")
+		return runPrefsTests () ? 0 : 1;
 
 	// Some plug-ins query the host application during initialize(); without a
 	// context they get a null and fall over. Ours does not, but the shells we

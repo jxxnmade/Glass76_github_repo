@@ -605,6 +605,11 @@ void RootView::setRefreshRateHz (int hz)
 //------------------------------------------------------------------------
 bool RootView::removed (CView* parent)
 {
+	// A change made just before the editor closes must not be lost inside
+	// the debounce window -- see Glass76Controller::flushPrefsNow.
+	if (mController)
+		mController->flushPrefsNow ();
+
 	if (mTimer)
 	{
 		mTimer->stop ();
@@ -681,6 +686,11 @@ void RootView::onTimer ()
 
 	if (changed)
 		invalidRect (mGaugeRect);
+
+	// Debounced off this same tick rather than fired synchronously on every
+	// click -- see Glass76Controller::flushPrefsIfDue.
+	if (mController)
+		mController->flushPrefsIfDue ();
 }
 
 //========================================================================

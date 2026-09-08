@@ -117,6 +117,8 @@ smtg_add_vst3plugin(Glass76
     source/version.h
     source/cids.h
     source/params.h
+    source/prefs.h
+    source/prefs.cpp
     source/processor.h
     source/processor.cpp
     source/controller.h
@@ -187,6 +189,8 @@ if(GLASS76_BUILD_TESTS)
 
     add_executable(glass76_test
         tools/offline_test.cpp
+        source/prefs.h
+        source/prefs.cpp
         ${GLASS76_TEST_MODULE_SRC}
         "${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/plugprovider.cpp"
     )
@@ -212,6 +216,8 @@ if(GLASS76_BUILD_UI_SNAPSHOT)
         tools/ui_snapshot.cpp
         source/cids.h
         source/params.h
+        source/prefs.h
+        source/prefs.cpp
         source/controller.h
         source/controller.cpp
         source/ui/theme.h

@@ -75,14 +75,22 @@ public:
 	/** 0 = light, 1 = dark. Purely a UI preference, so it lives in the
 	    controller's own state and is never exposed as a parameter. */
 	int getAppearance () const { return mAppearance; }
-	void setAppearance (int appearance) { mAppearance = appearance ? 1 : 0; }
+	void setAppearance (int appearance)
+	{
+		mAppearance = appearance ? 1 : 0;
+		markPrefsDirty ();
+	}
 
 	/** Absolute path to a user-chosen background image, or empty for none.
 	    Same story as appearance: a UI preference in the controller's own
 	    state, not a parameter. The view does the actual loading; this is
 	    just the persisted string. */
 	const std::string& getBackgroundImagePath () const { return mBackgroundImagePath; }
-	void setBackgroundImagePath (const std::string& path) { mBackgroundImagePath = path; }
+	void setBackgroundImagePath (const std::string& path)
+	{
+		mBackgroundImagePath = path;
+		markPrefsDirty ();
+	}
 
 	/** UI redraw rate in Hz: 30, 60 or 120. Same story as appearance -- a UI
 	    preference in the controller's own state, not a parameter. */
@@ -90,7 +98,46 @@ public:
 	void setRefreshRateHz (int hz)
 	{
 		mRefreshRateHz = (hz == 60 || hz == 120) ? hz : 30;
+		markPrefsDirty ();
 	}
+
+	/** 0 = Hardware, 1 = Glass. Same story again -- a UI preference, not a
+	    parameter. Selecting a skin has no visible effect yet: the editor
+	    still always opens the one Glass layout until the per-skin resize
+	    plumbing lands. It is wired up now purely so the value round-trips
+	    through both the project state and the global preferences file from
+	    day one, and nothing has to migrate later. */
+	int getSkin () const { return mSkin; }
+	void setSkin (int skin)
+	{
+		mSkin = skin ? 1 : 0;
+		markPrefsDirty ();
+	}
+
+	/** Loads Documents\Glass76\preferences.json once per controller
+	    instance, applying it over whatever setState() already read from the
+	    project (see setState()'s own comment for the precedence rule).
+	    Called from createView() and, defensively, from setState() -- hosts
+	    do not all call these in the same order. Safe to call more than
+	    once: it is a no-op once a load has succeeded, and retries on a
+	    later call if Documents could not be read yet. */
+	void ensurePrefsLoaded ();
+
+	/** Marks the effective UI settings as changed since the last write to
+	    preferences.json. The actual write happens debounced, off
+	    RootView's existing animation timer (flushPrefsIfDue()), never
+	    synchronously with the click that caused it. */
+	void markPrefsDirty () { mPrefsDirty = true; }
+
+	/** Called every tick from RootView::onTimer. Writes preferences.json at
+	    most once per ~500 ms of real dirtiness (expressed in ticks, so it
+	    self-scales with the 30/60/120 Hz refresh rate). */
+	void flushPrefsIfDue ();
+
+	/** Unconditional write bypassing the debounce, so a change made just
+	    before the editor closes is never lost. Called from RootView's
+	    destructor path and from terminate(). */
+	void flushPrefsNow ();
 
 	//--- Interface ------------------------------------------------------
 	DEFINE_INTERFACES
@@ -102,6 +149,13 @@ private:
 	int mAppearance {1};   // dark by default
 	std::string mBackgroundImagePath;
 	int mRefreshRateHz {30};
+	int mSkin {0};   // 0 = Hardware, 1 = Glass; see setSkin()
+
+	//--- global preferences file ------------------------------------------
+	bool mPrefsLoaded {false};      // true once preferences.json was read successfully
+	bool mPrefsDirty {false};       // an effective value changed since the last write
+	bool mPrefsWritable {true};     // false once a write has failed; stops retrying
+	int mPrefsDirtyTicks {0};       // timer ticks since markPrefsDirty(), for the debounce
 };
 
 //------------------------------------------------------------------------
