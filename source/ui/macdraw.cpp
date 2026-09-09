@@ -151,7 +151,7 @@ void drawSoftShadow (CDrawContext* context, const CRect& rect, CCoord radius,
 
 //------------------------------------------------------------------------
 void drawGlassPanel (CDrawContext* context, const CRect& rect, CCoord radius,
-                     const Theme& theme, bool withShadow)
+                     const Theme& theme, bool withShadow, bool skipFill)
 {
 	if (rect.getWidth () <= 2 || rect.getHeight () <= 2)
 		return;
@@ -159,8 +159,9 @@ void drawGlassPanel (CDrawContext* context, const CRect& rect, CCoord radius,
 	//--- 1. outer drop shadow ---------------------------------------
 	// The kit's floating-panel shadow is 0 18px 46px at 0.25. These cards
 	// sit close to their backdrop rather than over a wallpaper, so the
-	// shadow is scaled to match that distance.
-	if (withShadow)
+	// shadow is scaled to match that distance. Skipped along with the fill:
+	// a shadow with nothing opaque casting it just reads as a smudge.
+	if (withShadow && !skipFill)
 	{
 		drawSoftShadow (context, rect, radius, theme.glassShadow, 10.0, 3.0,
 		                theme.dark ? 0.40 : 0.13);
@@ -171,8 +172,11 @@ void drawGlassPanel (CDrawContext* context, const CRect& rect, CCoord radius,
 		return;
 
 	//--- 2. the fill ------------------------------------------------
-	context->setFillColor (theme.glassFill);
-	context->drawGraphicsPath (path, CDrawContext::kPathFilled);
+	if (!skipFill)
+	{
+		context->setFillColor (theme.glassFill);
+		context->drawGraphicsPath (path, CDrawContext::kPathFilled);
+	}
 
 	//--- 3. the inner edge stack ------------------------------------
 	// Order is the kit's: dark bands first, THEN the highlight. That order

@@ -47,6 +47,10 @@ enum class WidgetKind : uint8_t
 	Switch,      // two-state toggle, sliding-capsule style. `on`, `shownOn`.
 	Pill,        // two-state toggle, labelled-capsule style. `text` is its
 	             // caption. `on`, `shownOn`.
+	Knob,        // rotary control, dragged vertically like every other DAW
+	             // knob (not by absolute position, unlike Slider). Reuses
+	             // Slider's own fields: `detents`, `snap`, `bipolar`, `norm`,
+	             // `defaultNorm`, `shownNorm`. `r` is square: width == height.
 };
 
 /** Widgets with no parameter ID (Card, Label) leave `id` at this value. */
@@ -67,6 +71,7 @@ struct Widget
 	//--- Segmented ----------------------------------------------------------
 	std::vector<std::string> labels;
 	bool capsule {true};
+	bool vertical {false};    // stacked top-to-bottom instead of a row
 	int step {0};
 	double shownStep {0.0};   // eased toward step each timer tick
 

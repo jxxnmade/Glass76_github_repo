@@ -31,6 +31,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -589,8 +591,8 @@ int runProgramComparison (const char* glassPath, const char* wavesPath)
 			{kParamInputId, c.inMark / 8.0},
 			{kParamOutputId, c.outMark / 8.0},
 			{kParamRatioId, step (c.ratioStep, kRatioStepCount)},
-			{kParamAttackId, step (1, kTimeStepCount)},
-			{kParamReleaseId, step (2, kTimeStepCount)},
+			{kParamAttackId, kAttackDefaultNormalized},
+			{kParamReleaseId, kReleaseDefaultNormalized},
 			{kParamCompOffId, 0.0},
 			{kParamAutoMakeupId, c.autoMakeup ? 1.0 : 0.0},
 			{kParamAnalogId, step (kAnalogOff, kAnalogStepCount)},
@@ -657,8 +659,8 @@ int runGainLaw (const char* glassPath, const char* wavesPath)
 		return std::vector<std::pair<ParamID, ParamValue>> {
 			{kParamInputId, inNorm}, {kParamOutputId, outNorm},
 			{kParamRatioId, step (3, kRatioStepCount)},
-			{kParamAttackId, step (1, kTimeStepCount)},
-			{kParamReleaseId, step (2, kTimeStepCount)},
+			{kParamAttackId, kAttackDefaultNormalized},
+			{kParamReleaseId, kReleaseDefaultNormalized},
 			{kParamCompOffId, 0.0}, {kParamAutoMakeupId, 0.0},
 			{kParamAnalogId, step (kAnalogOff, kAnalogStepCount)},
 			{kParamMixId, 1.0}, {kParamTrimId, trimDbToNormalized (0.0)},
@@ -758,8 +760,8 @@ int runComparison (const char* glassPath, const char* wavesPath)
 			{kParamInputId, inMark / 8.0},
 			{kParamOutputId, outMark / 8.0},
 			{kParamRatioId, step (ratioStep, kRatioStepCount)},
-			{kParamAttackId, step (1, kTimeStepCount)},    // position 3
-			{kParamReleaseId, step (2, kTimeStepCount)},   // position 5
+			{kParamAttackId, kAttackDefaultNormalized},    // position 3
+			{kParamReleaseId, kReleaseDefaultNormalized},   // position 5
 			{kParamCompOffId, compOff ? 1.0 : 0.0},
 			{kParamAutoMakeupId, 0.0},
 			{kParamAnalogId, step (kAnalogOff, kAnalogStepCount)},
@@ -872,11 +874,11 @@ int runComparison (const char* glassPath, const char* wavesPath)
 		{
 			auto gp = glassParams (6, 4, 3, false);
 			auto wp = wavesParams (6, 4, 3, false);
-			const int gStep = (pos <= 1.0) ? 0 : 3;   // position 1 or 7
+			const double gNorm = (pos - 1.0) / 6.0;   // position 1..7 -> normalized
 			for (auto& e : gp)
 			{
 				if (e.first == kParamAttackId)
-					e.second = step (gStep, kTimeStepCount);
+					e.second = gNorm;
 			}
 			for (auto& e : wp)
 			{
@@ -891,6 +893,88 @@ int runComparison (const char* glassPath, const char* wavesPath)
 
 	std::printf ("\nA positive delta means Glass76 is louder / reducing more.\n");
 	return 0;
+}
+
+//------------------------------------------------------------------------
+// Attack/Release went from a 4-detent StringListParameter to a continuous
+// Parameter, both ends going through attackNormalizedToSeconds/
+// releaseNormalizedToSeconds in params.h. Pure functions, no plugin or host
+// needed -- checked directly here rather than only through a live drag,
+// which a screen-automation click can fail to register for reasons that
+// have nothing to do with whether the curve itself is right.
+//------------------------------------------------------------------------
+bool runParamMathTests ()
+{
+	using namespace Jaxson;
+	const int before = gFailures;
+
+	std::printf ("\nAttack / Release continuous curve\n");
+
+	auto near = [] (double a, double b, double tolFrac) {
+		return std::fabs (a - b) <= std::fabs (b) * tolFrac;
+	};
+
+	//--- the four printed positions still land where they always did -----
+	// The curve itself never changed (see attackPositionToSeconds's own
+	// comment); only the parameter and widget on top of it were stepped.
+	// 1% tolerance covers rounding in the numbers this is checked against.
+	{
+		const double us1 = attackNormalizedToSeconds (0.0) * 1e6;
+		const double us3 = attackNormalizedToSeconds (1.0 / 3.0) * 1e6;
+		const double us5 = attackNormalizedToSeconds (2.0 / 3.0) * 1e6;
+		const double us7 = attackNormalizedToSeconds (1.0) * 1e6;
+		check (near (us1, 800.0, 0.01), "attack norm 0.0 (position 1) is 800 us", f2 (us1));
+		check (near (us3, 234.0, 0.01), "attack norm 1/3 (position 3) is 234 us", f2 (us3));
+		check (near (us5, 68.0, 0.01), "attack norm 2/3 (position 5) is 68 us", f2 (us5));
+		check (near (us7, 20.0, 0.01), "attack norm 1.0 (position 7) is 20 us", f2 (us7));
+	}
+	{
+		const double ms1 = releaseNormalizedToSeconds (0.0) * 1e3;
+		const double ms3 = releaseNormalizedToSeconds (1.0 / 3.0) * 1e3;
+		const double ms5 = releaseNormalizedToSeconds (2.0 / 3.0) * 1e3;
+		const double ms7 = releaseNormalizedToSeconds (1.0) * 1e3;
+		check (near (ms1, 1100.0, 0.01), "release norm 0.0 (position 1) is 1100 ms", f2 (ms1));
+		check (near (ms3, 392.0, 0.01), "release norm 1/3 (position 3) is 392 ms", f2 (ms3));
+		check (near (ms5, 140.0, 0.01), "release norm 2/3 (position 5) is 140 ms", f2 (ms5));
+		check (near (ms7, 50.0, 0.01), "release norm 1.0 (position 7) is 50 ms", f2 (ms7));
+	}
+
+	//--- the defaults the controller/processor both seed from -------------
+	check (std::fabs (kAttackDefaultNormalized - 1.0 / 3.0) < 1e-9,
+	       "kAttackDefaultNormalized is exactly position 3");
+	check (std::fabs (kReleaseDefaultNormalized - 2.0 / 3.0) < 1e-9,
+	       "kReleaseDefaultNormalized is exactly position 5");
+
+	//--- genuinely continuous: no plateau, no snap back to the old 4 -------
+	// A stepped parameter would repeat the same seconds value across a
+	// whole sub-range of norm; a continuous one changes at every step of
+	// this sweep. This is the actual behavioural difference the "make it
+	// continuous" request was about, and the one a slow visual drag can't
+	// prove by itself even when it does register.
+	{
+		bool attackStrictlyMonotonic = true, releaseStrictlyMonotonic = true;
+		double prevAttack = attackNormalizedToSeconds (0.0);
+		double prevRelease = releaseNormalizedToSeconds (0.0);
+		constexpr int kSweepSteps = 200;
+		for (int i = 1; i <= kSweepSteps; i++)
+		{
+			const double n = static_cast<double> (i) / kSweepSteps;
+			const double a = attackNormalizedToSeconds (n);
+			const double r = releaseNormalizedToSeconds (n);
+			if (a >= prevAttack)
+				attackStrictlyMonotonic = false;
+			if (r >= prevRelease)
+				releaseStrictlyMonotonic = false;
+			prevAttack = a;
+			prevRelease = r;
+		}
+		check (attackStrictlyMonotonic,
+		       "attack time strictly decreases across a 200-point sweep of norm 0..1");
+		check (releaseStrictlyMonotonic,
+		       "release time strictly decreases across a 200-point sweep of norm 0..1");
+	}
+
+	return gFailures == before;
 }
 
 //------------------------------------------------------------------------
@@ -915,13 +999,16 @@ bool runPrefsTests ()
 		p.appearance = "light";
 		p.refreshRateHz = 120;
 		p.backgroundImage = "C:\\Users\\jaxson\\Pictures\\wall.png";
+		p.scalePercent = 150;
+		p.transparentBackground = true;
 
 		const std::string json = prefs::serialize (p);
 		Glass76Prefs back;
 		const bool ok = prefs::parse (json, back);
 		check (ok && back.version == p.version && back.skin == p.skin &&
 		           back.appearance == p.appearance && back.refreshRateHz == p.refreshRateHz &&
-		           back.backgroundImage == p.backgroundImage,
+		           back.backgroundImage == p.backgroundImage && back.scalePercent == p.scalePercent &&
+		           back.transparentBackground == p.transparentBackground,
 		       "round trip preserves every field, including a backslash path", json);
 	}
 
@@ -1035,11 +1122,56 @@ bool runPrefsTests ()
 		       "an out-of-set refresh rate still parses -- snapping is the loader's job, not parse()'s");
 	}
 
+	//--- scalePercent outside {25,50,100,150,200}: same story ------------
+	{
+		Glass76Prefs p;
+		const bool ok = prefs::parse (R"({"scalePercent":33})", p);
+		check (ok && p.scalePercent == 33,
+		       "an out-of-set scale percent still parses -- snapping is the loader's job, not parse()'s");
+	}
+
+	//--- a missing scalePercent leaves the struct's built-in default ------
+	{
+		Glass76Prefs p;
+		const bool ok = prefs::parse (R"({"skin":"glass"})", p);
+		check (ok && p.scalePercent == Glass76Prefs {}.scalePercent,
+		       "a file predating the window-scale feature leaves scalePercent at its default");
+	}
+
+	//--- transparentBackground: true, false, and a missing-key default ----
+	{
+		Glass76Prefs p;
+		bool ok = prefs::parse (R"({"transparentBackground":true})", p);
+		check (ok && p.transparentBackground == true, "transparentBackground: true parses");
+
+		p = Glass76Prefs {};
+		ok = prefs::parse (R"({"transparentBackground":false})", p);
+		check (ok && p.transparentBackground == false, "transparentBackground: false parses");
+
+		p = Glass76Prefs {};
+		ok = prefs::parse (R"({"skin":"glass"})", p);
+		check (ok && p.transparentBackground == Glass76Prefs {}.transparentBackground,
+		       "a file predating the transparent-background feature leaves it at its default");
+	}
+
 	//--- the real filesystem path: save, then load back -------------------
 	// Exercises path resolution, atomic write, and mtime() together. Skips
 	// itself (without counting as a failure) on a machine where Documents
 	// could not be resolved at all -- prefs::dir() returning empty is a
 	// documented, handled condition, not a bug.
+	//
+	// This is the one test in the file that touches the real filesystem
+	// path, not a pure in-memory parse/serialize -- which means it was
+	// overwriting whatever real preferences.json already existed at
+	// Documents\Glass76 with the test's own values, with nothing to put a
+	// user's actual settings back afterwards. Concretely: running
+	// --prefs-test on a machine where Glass76 had already been used would
+	// silently reset that user's skin/appearance/refresh rate/scale/
+	// background image to whatever this test happened to write. Back up
+	// whatever is there (bytes, not a parsed struct -- a malformed or
+	// hand-edited file must round-trip through this unharmed too) before
+	// touching the file, and restore it (or remove the file entirely, if
+	// there wasn't one) once the test below is done, success or failure.
 	{
 		if (prefs::dir ().empty ())
 		{
@@ -1047,12 +1179,26 @@ bool runPrefsTests ()
 		}
 		else
 		{
+			std::string originalContent;
+			bool hadOriginal = false;
+			{
+				std::ifstream backupIn (std::filesystem::u8path (prefs::path ()), std::ios::binary);
+				if (backupIn)
+				{
+					originalContent.assign ((std::istreambuf_iterator<char> (backupIn)),
+					                        std::istreambuf_iterator<char> ());
+					hadOriginal = true;
+				}
+			}
+
 			Glass76Prefs p;
 			p.version = 1;
 			p.skin = "hardware";
 			p.appearance = "dark";
 			p.refreshRateHz = 30;
 			p.backgroundImage.clear ();
+			p.scalePercent = 200;
+			p.transparentBackground = true;
 
 			const int64_t before64 = prefs::mtime ();
 			const bool saved = prefs::save (p);
@@ -1061,12 +1207,31 @@ bool runPrefsTests ()
 			Glass76Prefs back;
 			const bool loaded = saved && prefs::load (back);
 			check (loaded && back.skin == p.skin && back.appearance == p.appearance &&
-			           back.refreshRateHz == p.refreshRateHz,
+			           back.refreshRateHz == p.refreshRateHz && back.scalePercent == p.scalePercent &&
+			           back.transparentBackground == p.transparentBackground,
 			       "load() reads back exactly what save() wrote");
 
 			const int64_t after64 = prefs::mtime ();
 			check (!saved || after64 != 0, "mtime() reports a write time after save()");
 			(void) before64;
+
+			// Restore whatever was really there -- see the comment above this
+			// block. Best-effort: a failure here is not this test's to report,
+			// since prefs::save() itself already exercised (and, if it failed,
+			// already checked) the write path above.
+			if (hadOriginal)
+			{
+				std::ofstream restoreOut (std::filesystem::u8path (prefs::path ()),
+				                          std::ios::binary | std::ios::trunc);
+				if (restoreOut)
+					restoreOut.write (originalContent.data (),
+					                  static_cast<std::streamsize> (originalContent.size ()));
+			}
+			else
+			{
+				std::error_code ec;
+				std::filesystem::remove (std::filesystem::u8path (prefs::path ()), ec);
+			}
 		}
 	}
 
@@ -1083,6 +1248,7 @@ int main (int argc, char* argv[])
 		std::printf ("usage: glass76_test <path to Glass76.vst3>\n");
 		std::printf ("       glass76_test --list <path to any .vst3>\n");
 		std::printf ("       glass76_test --prefs-test\n");
+		std::printf ("       glass76_test --param-test\n");
 		return 2;
 	}
 
@@ -1090,6 +1256,11 @@ int main (int argc, char* argv[])
 	// is pure C++ with no VSTGUI or host dependency at all.
 	if (std::string (argv[1]) == "--prefs-test")
 		return runPrefsTests () ? 0 : 1;
+
+	// --param-test: exercises the continuous attack/release curve in
+	// params.h directly. Same story -- pure C++, no plugin or host needed.
+	if (std::string (argv[1]) == "--param-test")
+		return runParamMathTests () ? 0 : 1;
 
 	// Some plug-ins query the host application during initialize(); without a
 	// context they get a null and fall over. Ours does not, but the shells we
@@ -1187,8 +1358,8 @@ int main (int argc, char* argv[])
 			{kParamInputId, inMark / 8.0},
 			{kParamOutputId, outMark / 8.0},
 			{kParamRatioId, step (ratioStep, kRatioStepCount)},
-			{kParamAttackId, step (1, kTimeStepCount)},   // position 3
-			{kParamReleaseId, step (2, kTimeStepCount)},  // position 5
+			{kParamAttackId, kAttackDefaultNormalized},   // position 3
+			{kParamReleaseId, kReleaseDefaultNormalized},  // position 5
 			{kParamCompOffId, 0.0},
 			{kParamAutoMakeupId, 0.0},
 			{kParamAnalogId, step (kAnalogOff, kAnalogStepCount)},

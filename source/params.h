@@ -23,8 +23,8 @@ enum Glass76ParamID : Steinberg::Vst::ParamID
 	kParamInputId      = 0,   // stepped attenuator, 9 detents
 	kParamOutputId     = 1,   // stepped attenuator, 9 detents
 	kParamAutoMakeupId = 2,   // on / off
-	kParamAttackId     = 3,   // 4 detents: knob positions 1 3 5 7
-	kParamReleaseId    = 4,   // 4 detents: knob positions 1 3 5 7
+	kParamAttackId     = 3,   // continuous, knob position 1..7
+	kParamReleaseId    = 4,   // continuous, knob position 1..7
 	kParamRatioId      = 5,   // 20:1 12:1 8:1 4:1 ALL
 	kParamMeterId      = 6,   // GR / IN / OUT
 	kParamCompOffId    = 7,   // on == compression disabled
@@ -72,11 +72,18 @@ static constexpr double kGainStepsDb[kGainStepCount] = {
 static constexpr int kInputDefaultStep = 4;
 static constexpr int kOutputDefaultStep = 4;
 
-/** Attack / release knob positions, as printed on the front panel. */
-static constexpr int kTimeStepCount = 4;
-static constexpr int kTimeStepPositions[kTimeStepCount] = {1, 3, 5, 7};
-static constexpr int kAttackDefaultStep = 1;   // position 3
-static constexpr int kReleaseDefaultStep = 2;  // position 5
+/** Attack / release are continuous now -- the printed 1/3/5/7 positions
+    were never anything but four samples off a smooth knob-position curve
+    (see attackPositionToSeconds/releasePositionToSeconds below, which
+    already took a continuous position; only the parameter and the widget
+    on top of them were artificially stepped to 4 detents). Position ranges
+    1..7 the same way the panel prints it; normalized 0..1 maps onto it
+    linearly, so norm 0 = position 1, norm 1 = position 7. The two defaults
+    below are exactly the old step defaults (position 3 and position 5)
+    expressed as normalized values, so nothing that depended on the default
+    sound changes. */
+static constexpr double kAttackDefaultNormalized = 1.0 / 3.0;   // position 3 (234 us)
+static constexpr double kReleaseDefaultNormalized = 2.0 / 3.0;  // position 5 (140 ms)
 
 /** Ratio buttons. The last one is the all-buttons-in "British" mode. */
 static constexpr int kRatioStepCount = 5;
@@ -249,30 +256,39 @@ inline double outputGainDb (double normalized)
 	return db <= -600.0 ? kGainMinusInfDb : db + kOutputMakeupDb;
 }
 
-/** Attack knob position -> seconds. Position 1 is slowest (800 us),
-    position 7 fastest (20 us), interpolated logarithmically the way the
-    hardware's stepped pot behaves. */
-inline double attackPositionToSeconds (int position)
+/** Attack knob position -> seconds, continuously. Position 1 is slowest
+    (800 us), position 7 fastest (20 us), an exponential (geometric) curve
+    between those two anchors -- a straight line in log space, matching how
+    a real pot's stepped detents actually sit on this kind of taper. Also
+    lands within measurement noise of the two printed intermediate
+    positions this was fit against: 234 us at 3, 68 us at 5 (see
+    SWEEP_ANALYSIS.md for where those four numbers came from). `position`
+    was always meant to be continuous here; only the parameter and widget
+    above it used to force it to {1, 3, 5, 7}. */
+inline double attackPositionToSeconds (double position)
 {
-	const double p = static_cast<double> (position);
-	return 800e-6 * std::pow (20.0 / 800.0, (p - 1.0) / 6.0);
+	return 800e-6 * std::pow (20.0 / 800.0, (position - 1.0) / 6.0);
 }
 
-/** Release knob position -> seconds. Position 1 = 1100 ms, 7 = 50 ms. */
-inline double releasePositionToSeconds (int position)
+/** Release knob position -> seconds, continuously. Position 1 = 1100 ms,
+    7 = 50 ms; same exponential curve as attack, same provenance. */
+inline double releasePositionToSeconds (double position)
 {
-	const double p = static_cast<double> (position);
-	return 1.1 * std::pow (0.050 / 1.1, (p - 1.0) / 6.0);
+	return 1.1 * std::pow (0.050 / 1.1, (position - 1.0) / 6.0);
 }
 
-inline double attackStepToSeconds (int step)
+/** Normalized 0..1 -> attack seconds. norm 0 is position 1, norm 1 is
+    position 7, linear in between -- so the printed position itself is
+    `1.0 + normalized * 6.0`, which TimeConstantParameter's toString()
+    prints alongside the resolved time. */
+inline double attackNormalizedToSeconds (double normalized)
 {
-	return attackPositionToSeconds (kTimeStepPositions[clampIndex (step, kTimeStepCount)]);
+	return attackPositionToSeconds (1.0 + std::clamp (normalized, 0.0, 1.0) * 6.0);
 }
 
-inline double releaseStepToSeconds (int step)
+inline double releaseNormalizedToSeconds (double normalized)
 {
-	return releasePositionToSeconds (kTimeStepPositions[clampIndex (step, kTimeStepCount)]);
+	return releasePositionToSeconds (1.0 + std::clamp (normalized, 0.0, 1.0) * 6.0);
 }
 
 /** Normalized -> plain, for the two continuous parameters. */

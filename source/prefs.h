@@ -39,6 +39,8 @@ struct Glass76Prefs
 	std::string appearance {"dark"};     // "light" | "dark"
 	int32_t refreshRateHz {30};          // snapped to {30, 60, 120} on load
 	std::string backgroundImage;         // absolute path, or empty for none
+	int32_t scalePercent {100};          // snapped to {25, 50, 100, 150, 200} on load
+	bool transparentBackground {false};  // skip the opaque backdrop/card fills entirely
 };
 
 namespace prefs {

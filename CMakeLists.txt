@@ -131,8 +131,12 @@ message(STATUS "Glass76: VST 3 SDK at ${vst3sdk_SOURCE_DIR}")
 project(Glass76
     # Your plug-in version. Change it here only; source/version.h picks it up
     # through the generated projectversion.h, and installer/Glass76.nsi reads
-    # it back out of the built binary.
-    VERSION 1.1.2.0
+    # it back out of the built binary. CMake's VERSION field is numeric only
+    # -- a pre-release suffix like "-alpha" can't live here. It goes on the
+    # git tag instead (v2.0.0-alpha), which is what the installer filename,
+    # the release title and this being marked a pre-release on GitHub all
+    # actually communicate "not the finished 2.0.0" with.
+    VERSION 2.0.0.0
     DESCRIPTION "Glass76 VST 3 Plug-in"
 )
 
@@ -159,6 +163,8 @@ smtg_add_vst3plugin(Glass76
     source/ui/skin.h
     source/ui/skin_glass.h
     source/ui/skin_glass.cpp
+    source/ui/skin_hardware.h
+    source/ui/skin_hardware.cpp
     source/ui/editor.h
     source/ui/editor.cpp
 )
@@ -259,6 +265,8 @@ if(GLASS76_BUILD_UI_SNAPSHOT)
         source/ui/skin.h
         source/ui/skin_glass.h
         source/ui/skin_glass.cpp
+        source/ui/skin_hardware.h
+        source/ui/skin_hardware.cpp
         source/ui/editor.h
         source/ui/editor.cpp
     )

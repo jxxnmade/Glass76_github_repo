@@ -6,7 +6,79 @@ made with any version will always find the plug-in again.
 
 ## [Unreleased]
 
+## [2.0.0-alpha] — 2026-09-09
+
+Alpha: the five items below are all new this release and have had
+comparatively little real-world use yet, hence alpha rather than a finished
+2.0.0. Nothing here changes a saved project's automation lanes or class IDs.
+
 ### Plug-in
+
+- **Hardware skin**: a real 1176-style rack faceplate, not the placeholder
+  that reused Glass's own layout. One continuous brushed-metal panel (no
+  group boxes) at its own 1240×470 window size: large Input/Output knobs,
+  stacked Attack/Release knobs, a vertical Ratio button stack, an analog VU
+  meter with a needle sweeping off the same smoothed meter state Glass's own
+  circular gauge reads, a vertical Meter-select stack, Comp Off set apart in
+  red, and the Auto Makeup/Analog/Mix/Trim bottom row. Adapted from the
+  classic 1176/CLA-76 hardware layout — the knob/meter/ratio-stack
+  arrangement is generic vintage-compressor language, not anything belonging
+  to a specific other plug-in — and branded as Glass76 throughout, not
+  copying any other product's chrome, logo or names. The existing
+  light/dark appearance toggle doubles as the two classic metal finishes.
+  Procedural, like Glass: no bitmap assets, built from the same VSTGUI
+  gradient/path primitives. New `WidgetKind::Knob` (relative vertical drag,
+  the way every real and virtual knob works, unlike the existing `Slider`'s
+  absolute x-position mapping) and a per-skin design canvas size
+  (`RootView::designSize`) needed adding to support it — see
+  `source/ui/skin_hardware.h/.cpp` and `source/ui/widget.h`.
+- **Skin picker**: the Settings panel's old single "tap to switch to the
+  other skin" pill is a real picker now, one selectable option per
+  `skins::all()` entry — the mechanism that lets a third skin just add
+  another pill later rather than needing new code.
+- **Window scale**, 25/50/100/150/200 %, in Settings below Refresh rate,
+  persisted like every other UI preference and applied via
+  `VSTGUI::VST3Editor::setZoomFactor`. Also reachable from the host's own
+  native "Zoom" context-menu item where the host supports it
+  (`setAllowedZoomFactors`), which stays in sync with the Settings panel
+  either way. Fixed one real bug in the underlying window-sizing work along
+  the way: `RootView::ensureChrome()`'s cached backdrop bitmap was created at
+  sub-1.0 scale for zoom below 100%, a code path VSTGUI's Direct2D backend
+  does not handle correctly (real content-scale factors are always ≥1 —
+  zoom was the first thing in this project to legitimately drive it below
+  that), which cropped most of the panel off the visible window at low zoom
+  instead of scaling it down. Clamped to a minimum of 1.0. A second, separate
+  bug hit switching skins while zoomed: `setEditorSizeConstrains()` was only
+  ever called *before* `exchangeView()` built the new skin's view, so its
+  resize request raced whatever the host's frame size happened to be at that
+  instant rather than the size the new skin actually needed — at a big zoom
+  mismatch (Hardware's 1240-wide canvas vs. Glass's 880-wide, both scaled
+  down together) this could leave the window at the old skin's size while the
+  new skin's full design-space content rendered into it. Fixed by
+  re-asserting the size constraint in `createCustomView()`, once the new
+  view actually exists.
+- **Continuous Attack and Release.** The printed 1/3/5/7 positions were
+  always four samples off a continuous exponential curve
+  (`attackPositionToSeconds`/`releasePositionToSeconds` in `source/params.h`
+  already took a continuous position); only the parameter and the widget on
+  top of it forced it to those four detents. Both are a genuinely continuous
+  `Slider` (Glass) or `Knob` (Hardware) now — full drag range, not clamped to
+  the old four stops. Glass's sliders keep tick marks at 1/3/5/7 (which land
+  exactly on evenly-spaced normalized positions) so a setting can still be
+  eyeballed against the hardware's own panel; the ticks are a reference, not
+  a stop. 12 new pure-math tests (`glass76_test --param-test`) check the
+  curve against all four known points and confirm strict monotonicity across
+  a 200-point sweep of the whole range.
+- **Transparent background**, a Settings toggle that skips the opaque
+  window-background/toolbar/card fills so the host's own window shows
+  through. Partially working: background and toolbar transparency is
+  confirmed live against a real host window, not just visually plausible,
+  but card fills currently stay opaque instead of showing through too — a
+  Direct2D-specific compositing quirk with gradient/path-clip fills against a
+  layered-transparent window that wasn't resolved before this release
+  shipped. Off by default.
+
+### Plug-in (earlier work this release)
 
 - **Global preferences file**, `~/Documents/Glass76/preferences.json`
   (`%USERPROFILE%\Documents\Glass76\` on Windows, via `SHGetKnownFolderPath`
@@ -15,12 +87,10 @@ made with any version will always find the plug-in again.
   every project and instance instead of resetting to per-project state;
   writes are debounced (~500 ms off the existing UI timer) and flushed
   unconditionally when the editor closes. See `source/prefs.h`.
-- **Skin preference (plumbing only, not yet visible).** A `skin` field
-  ("hardware" | "glass") now round-trips through both project state and the
-  new preferences file, but there is no UI to select it yet and no second
-  layout to switch to — the editor still always opens the one Glass layout.
-  Wired up now so the value has somewhere to live before the per-skin
-  resize work lands, not because switching skins does anything yet.
+- **Skin preference.** A `skin` field ("hardware" | "glass") now round-trips
+  through both project state and the preferences file. Landed as plumbing
+  only, ahead of the picker and the Hardware layout above that actually use
+  it — see this release's own Hardware skin and skin picker entries.
 
 ### Packaging
 

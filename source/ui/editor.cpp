@@ -162,11 +162,14 @@ bool computeAccentHueFromImage (VSTGUI::CBitmap* bitmap, double& outHueDeg)
 RootView::RootView (Glass76Controller* owner, SkinId skin, const CRect& size)
 : CView (size), mController (owner)
 {
-	// The paint is still always Glass -- every SkinId resolves to the same
-	// instance until the Hardware faceplate exists (see skins::get in
-	// skin_glass.cpp) -- but the window this view opens at is real from
-	// this stage on, so the id is threaded through regardless.
+	// Stage 5: Hardware is its own real skin now (see skins::get in
+	// skin_glass.cpp), so this decides both which faceplate is painted and
+	// which design canvas buildLayout() lays it out on.
 	mSkin = &skins::get (skin);
+
+	const CPoint design = designSize (skin);
+	mDesignWidth = design.x;
+	mDesignHeight = design.y;
 
 	setMouseEnabled (true);
 	setTransparency (false);
@@ -179,7 +182,8 @@ RootView::RootView (Glass76Controller* owner, SkinId skin, const CRect& size)
 	{
 		switch (w.kind)
 		{
-			case WidgetKind::Slider: w.shownNorm = w.norm; break;
+			case WidgetKind::Slider:
+			case WidgetKind::Knob: w.shownNorm = w.norm; break;
 			case WidgetKind::Switch:
 			case WidgetKind::Pill: w.shownOn = w.on ? 1.0 : 0.0; break;
 			case WidgetKind::Segmented: w.shownStep = static_cast<double> (w.step); break;
@@ -232,7 +236,7 @@ void RootView::buildLayout ()
 		mWidgets.push_back (std::move (w));
 	};
 	auto addSegmented = [this] (const CRect& r, ParamID id, std::vector<std::string> labels,
-	                            int step, bool capsule) {
+	                            int step, bool capsule, bool vertical = false) {
 		Widget w;
 		w.kind = WidgetKind::Segmented;
 		w.r = r;
@@ -240,6 +244,20 @@ void RootView::buildLayout ()
 		w.labels = std::move (labels);
 		w.step = step;
 		w.capsule = capsule;
+		w.vertical = vertical;
+		mWidgets.push_back (std::move (w));
+	};
+	auto addKnob = [this] (const CRect& r, ParamID id, int detents, bool snap, bool bipolar,
+	                       double norm, double defaultNorm) {
+		Widget w;
+		w.kind = WidgetKind::Knob;
+		w.r = r;
+		w.id = id;
+		w.detents = detents;
+		w.snap = snap;
+		w.bipolar = bipolar;
+		w.norm = norm;
+		w.defaultNorm = defaultNorm;
 		mWidgets.push_back (std::move (w));
 	};
 	auto addSlider = [this] (const CRect& r, ParamID id, int detents, bool snap, bool bipolar,
@@ -273,6 +291,137 @@ void RootView::buildLayout ()
 		mWidgets.push_back (std::move (w));
 	};
 
+	if (mSkin->id () == SkinId::Hardware)
+	{
+		//====================================================================
+		// Hardware faceplate -- stage 5. A single continuous 1176-style
+		// panel, not the Glass card layout: real hardware has no group
+		// boxes, just a silkscreened metal plate. Reference: the Waves
+		// CLA-76's own layout (Input/Output knobs, Attack/Release knobs,
+		// a vertical Ratio stack, a VU meter flanked by Meter-select and
+		// Comp Off, a bottom row for Auto Makeup/Analog/Mix/Trim) -- adapted
+		// to this plug-in's own parameter set and branded as Glass76, not
+		// copying Waves' own chrome, logo or "CLA-76"/BLUEY/BLACKY naming.
+		// The 1176 knob/meter/ratio-stack arrangement itself is generic
+		// vintage-hardware-compressor language, not anything Waves-specific.
+		//====================================================================
+		constexpr CCoord kW = kHardwareWidth;    // 1240
+
+		mToolbar = R (0, 0, kW, kToolbarH);
+		mTitleRect = R (0, 10, kW, 27);
+		mSubtitleRect = R (0, 27, kW, 42);
+		mAppearanceRect = R (kW - 20 - 28, 12, kW - 20, 40);
+		mSettingsButtonRect = R (kW - 20 - 28 - 8 - 28, 12, kW - 20 - 28 - 8, 40);
+
+		constexpr CCoord kModelSwitchWidth = 300;
+		addSegmented (R (kInset, 12, kInset + kModelSwitchWidth, 40), kParamModelId,
+		             {"Glass76 CLEAN", "Glass76 Signature"}, kModelDefaultStep, true, false);
+
+		// Row baselines. Everything below the toolbar sits on one panel --
+		// no cards -- split into a top zone (knobs, ratio, meter, meter
+		// select/comp-off) and a bottom strip (auto makeup, analog, mix,
+		// trim), same rhythm the reference photo uses.
+		constexpr CCoord kTopY = 70;
+		constexpr CCoord kBottomStripY = 366;
+
+		auto knobLabel = [&] (const CRect& knobR, const char* text) {
+			CRect lr (knobR.left - 20, knobR.bottom + 6, knobR.right + 20, knobR.bottom + 24);
+			addLabel (lr, text, kCenterText, 1);
+		};
+
+		//--- Input / Output: the two large attenuator knobs ----------------
+		{
+			constexpr CCoord kD = 132;   // large-knob diameter
+			const CRect inputR (52, kTopY, 52 + kD, kTopY + kD);
+			const CRect outputR (52 + kD + 40, kTopY, 52 + kD + 40 + kD, kTopY + kD);
+			addKnob (inputR, kParamInputId, kGainStepCount, false, false,
+			        stepToNormalized (kInputDefaultStep, kGainStepCount),
+			        stepToNormalized (kInputDefaultStep, kGainStepCount));
+			knobLabel (inputR, "INPUT");
+			addKnob (outputR, kParamOutputId, kGainStepCount, false, false,
+			        stepToNormalized (kOutputDefaultStep, kGainStepCount),
+			        stepToNormalized (kOutputDefaultStep, kGainStepCount));
+			knobLabel (outputR, "OUTPUT");
+		}
+
+		//--- Attack / Release: two small knobs, stacked -------------------
+		{
+			constexpr CCoord kD = 78;
+			const CCoord x = 52 + 132 + 40 + 132 + 56;
+			const CRect attackR (x, kTopY, x + kD, kTopY + kD);
+			const CRect releaseR (x, kTopY + kD + 40, x + kD, kTopY + kD + 40 + kD);
+			addKnob (attackR, kParamAttackId, 0, false, false, kAttackDefaultNormalized,
+			        kAttackDefaultNormalized);
+			knobLabel (attackR, "ATTACK");
+			addKnob (releaseR, kParamReleaseId, 0, false, false, kReleaseDefaultNormalized,
+			        kReleaseDefaultNormalized);
+			knobLabel (releaseR, "RELEASE");
+		}
+
+		//--- Ratio: vertical 5-button stack, same param as Glass's own ----
+		{
+			const CCoord x = 52 + 132 + 40 + 132 + 56 + 78 + 48;
+			const CCoord w = 64;
+			const CCoord rowH = 32;
+			// seg.r is the whole stack's bounding box, not one row --
+			// paintSegmented divides its height by the label count.
+			CRect r (x, kTopY, x + w, kTopY + rowH * 5);
+			addSegmented (r, kParamRatioId, {"20:1", "12:1", "8:1", "4:1", "All"}, kRatioDefaultStep,
+			             false, true);
+			CRect lr (x - 10, kTopY - 20, x + w + 10, kTopY - 2);
+			addLabel (lr, "RATIO", kCenterText, 2);
+		}
+
+		//--- VU meter panel --------------------------------------------------
+		// paintGauge draws the meter itself into mGaugeRect; the "Glass76"
+		// wordmark below it is a plain Label like every other static text.
+		{
+			const CCoord x0 = 52 + 132 + 40 + 132 + 56 + 78 + 48 + 64 + 56;
+			const CCoord x1 = x0 + 320;
+			mGaugeRect = R (x0 + 24, kTopY + 6, x1 - 24, kTopY + 150);
+			CRect logo (x0, kTopY + 160, x1, kTopY + 186);
+			addLabel (logo, "Glass76", kCenterText, 0);
+		}
+
+		//--- Meter select + Comp Off: a vertical stack matching the ref's --
+		// GR/IN/OUT/COMP-OFF column, Comp Off styled as the odd one out
+		// (a Pill, not part of the Segmented group) exactly like the
+		// reference sets it apart with red instead of white.
+		{
+			const CCoord x = 52 + 132 + 40 + 132 + 56 + 78 + 48 + 64 + 56 + 320 + 40;
+			const CCoord w = 96;
+			const CCoord rowH = 32;
+			CRect meterR (x, kTopY, x + w, kTopY + rowH * 3);
+			addSegmented (meterR, kParamMeterId, {"GR", "IN", "OUT"}, kMeterDefaultStep, false, true);
+			CRect compOffR (x, kTopY + rowH * 3 + 16, x + w, kTopY + rowH * 4 + 16);
+			addPill (compOffR, kParamCompOffId, "Comp Off", false);
+		}
+
+		//--- Bottom strip: Auto Makeup, Analog, Mix, Trim -------------------
+		{
+			const CCoord rowY = kBottomStripY;
+			addSwitch (R (52, rowY + 6, 52 + mac::kSwitchWidth, rowY + 6 + mac::kSwitchHeight),
+			          kParamAutoMakeupId, false);
+			addLabel (R (52 + mac::kSwitchWidth + 12, rowY, 52 + mac::kSwitchWidth + 172, rowY + 30),
+			         "AUTO MAKEUP", kLeftText, 1);
+
+			const CCoord analogX = 340;
+			addSegmented (R (analogX, rowY, analogX + 220, rowY + mac::kSizeRg), kParamAnalogId,
+			             {"50 Hz", "60 Hz", "Off"}, kAnalogDefaultStep, false, false);
+
+			constexpr CCoord kSmallD = 78;
+			const CRect mixR (kW - 220, rowY - 24, kW - 220 + kSmallD, rowY - 24 + kSmallD);
+			addKnob (mixR, kParamMixId, 0, false, false, 1.0, 1.0);
+			knobLabel (mixR, "MIX");
+
+			const CRect trimR (kW - 90, rowY - 24, kW - 90 + kSmallD, rowY - 24 + kSmallD);
+			addKnob (trimR, kParamTrimId, 0, false, true, trimDbToNormalized (kTrimDefaultDb),
+			        trimDbToNormalized (kTrimDefaultDb));
+			knobLabel (trimR, "TRIM");
+		}
+	}
+	else
+	{
 	//--- toolbar ------------------------------------------------------
 	// Unified toolbar + title: 52 tall, which is the kit's control height
 	// plus 16. No traffic lights: the host owns the window chrome, and
@@ -366,16 +515,25 @@ void RootView::buildLayout ()
 		const CCoord row1 = kCardDynT + 46;
 		const CCoord row2 = kCardDynT + 92;
 		const CCoord row3 = kCardDynT + 138;
-		const CCoord h = mac::kSizeLg;   // 28: segmented controls are capsules at Lg
+		const CCoord h = mac::kSizeLg;   // 28: Ratio's segmented capsule stays Lg-sized
 
+		// Attack/Release are continuous now -- see params.h's
+		// attackNormalizedToSeconds/releaseNormalizedToSeconds -- so they're
+		// a Slider like every other continuous control here, not a 4-button
+		// Segmented snapped to the old printed positions. detents=4 draws
+		// tick marks at the CLA-76's own printed 1/3/5/7 (which land exactly
+		// on norm 0, 1/3, 2/3, 1 -- evenly spaced, unlike the gain marks) so
+		// a setting can still be eyeballed against the hardware's panel;
+		// snap stays false, so the drag itself is genuinely continuous and
+		// the ticks are a reference, not a stop.
 		addLabel (R (kColLeftX + kCardPad, row1, labelR, row1 + h), "Attack", kRightText, 1);
-		addSegmented (R (ctrlX, row1, ctrlR, row1 + h), kParamAttackId, {"1", "3", "5", "7"},
-		             kAttackDefaultStep, true);
+		addSlider (R (ctrlX, row1, ctrlR, row1 + h), kParamAttackId, 4, false, false,
+		          kAttackDefaultNormalized, kAttackDefaultNormalized);
 		mValueAttack = R (valueX, row1, valueR, row1 + h);
 
 		addLabel (R (kColLeftX + kCardPad, row2, labelR, row2 + h), "Release", kRightText, 1);
-		addSegmented (R (ctrlX, row2, ctrlR, row2 + h), kParamReleaseId, {"1", "3", "5", "7"},
-		             kReleaseDefaultStep, true);
+		addSlider (R (ctrlX, row2, ctrlR, row2 + h), kParamReleaseId, 4, false, false,
+		          kReleaseDefaultNormalized, kReleaseDefaultNormalized);
 		mValueRelease = R (valueX, row2, valueR, row2 + h);
 
 		addLabel (R (kColLeftX + kCardPad, row3, labelR, row3 + h), "Ratio", kRightText, 1);
@@ -418,17 +576,35 @@ void RootView::buildLayout ()
 		addSegmented (R (ctrlX, row3, ctrlR, row3 + mac::kSizeRg), kParamAnalogId,
 		             {"50 Hz", "60 Hz", "Off"}, kAnalogDefaultStep, false);
 	}
+	}   // else (Glass)
 
 	//--- settings overlay -----------------------------------------------
 	{
-		// +85 over the pre-skin card height: one label row plus one full-width
-		// button row plus the trailing separator gap, the same rhythm the
-		// refresh-rate block above it already uses -- see the skin row below.
-		// A placeholder pending stage 6's proper skin list; it earns its
-		// keep now by being the thing that actually exercises exchangeView.
-		constexpr CCoord cardW = 380, cardH = 364 + 85;
-		const CCoord cardL = kPanelWidth * 0.5 - cardW * 0.5;
-		const CCoord cardT = kPanelHeight * 0.5 - cardH * 0.5;
+		// cardH is a hard-won number, not a round one -- read the comment
+		// below before changing any of the offsets in this block.
+		//
+		// The design canvas is a fixed 470 tall (kPanelHeight) and stays that
+		// height even after stage 5 widens it to 1240 -- this card has to fit
+		// inside it forever, not just today. The pre-window-scale card (skin
+		// row included) was already 449 tall against that 470, a bare 10.5px
+		// margin top and bottom. A full new row in the refresh-rate row's own
+		// idiom -- its own divider, its own label, 85px total, the way the
+		// skin row was added in the previous stage -- does not fit in what
+		// was left: it would push cardH to 534 and clip the card's top and
+		// bottom edges off the visible window, silently, since this view's
+		// own bounds *are* the design canvas at this stage (no scroll, no
+		// overflow clipping notice -- content past 0/kPanelHeight just never
+		// gets drawn). So the window-scale row below is deliberately compact
+		// -- pill captions only ("25%" .. "200%"), no separate heading, set
+		// off from the refresh-rate row by a plain 10px gap rather than a
+		// divider -- and the credits-to-Close gap two rows down (was a loose
+		// 40px) is tightened to 14px to give the rest of the card room. Net
+		// effect: cardH grows by 16, to 465, leaving a 2.5px margin either
+		// side. If a future change needs the heading back, something else in
+		// this card has to shrink to pay for it.
+		constexpr CCoord cardW = 380, cardH = 364 + 85 + 16;
+		const CCoord cardL = mDesignWidth * 0.5 - cardW * 0.5;
+		const CCoord cardT = mDesignHeight * 0.5 - cardH * 0.5;
 		mSettingsCardRect = R (cardL, cardT, cardL + cardW, cardT + cardH);
 
 		mSettingsChooseRect = R (cardL + kCardPad, cardT + 78, cardL + kCardPad + 168, cardT + 78 + 32);
@@ -446,11 +622,41 @@ void RootView::buildLayout ()
 			mSettingsRateRect[i] = R (left, rateTop, left + rateW, rateTop + 32);
 		}
 
-		// Skin toggle: one full-width pill, 8px below the rate row's own
-		// label-to-button gap (rateTop + 32 rate buttons + 16+1 separator +
-		// 10 label gap + 18 label + 8 button gap).
-		const CCoord skinTop = rateTop + 32 + 17 + 10 + 18 + 8;
-		mSettingsSkinRect = R (cardL + kCardPad, skinTop, cardL + cardW - kCardPad, skinTop + 32);
+		// Window scale row: five equal pill buttons, a plain 10px gap below
+		// the refresh-rate row -- see the cardH comment above for why this
+		// one has no divider or heading of its own, unlike every other
+		// control group in this panel. The transparent-background toggle
+		// rides along at the end of this same row (a 28px icon button, same
+		// height) rather than earning a row of its own -- there is no
+		// vertical budget left for one; see its own comment below.
+		constexpr CCoord kTransparentIconW = 28;
+		constexpr CCoord kTransparentIconGap = 8;
+		const CCoord scaleTop = rateTop + 32 + 10;
+		const CCoord scaleGap = 8;
+		const CCoord scaleRegionW = cardW - 2 * kCardPad - kTransparentIconGap - kTransparentIconW;
+		const CCoord scaleW = (scaleRegionW - 4 * scaleGap) / 5.0;
+		for (int i = 0; i < 5; i++)
+		{
+			const CCoord left = cardL + kCardPad + i * (scaleW + scaleGap);
+			mSettingsScaleRect[i] = R (left, scaleTop, left + scaleW, scaleTop + 32);
+		}
+		{
+			const CCoord left = cardL + cardW - kCardPad - kTransparentIconW;
+			mSettingsTransparentRect = R (left, scaleTop, left + kTransparentIconW, scaleTop + 32);
+		}
+
+		// Skin picker: stage 6 -- one pill per skins::all() entry (both
+		// individually selectable, not "tap for the other"), below the scale
+		// row in the same divider-plus-label rhythm the old single toggle
+		// pill sat in.
+		const CCoord skinTop = scaleTop + 32 + 17 + 10 + 18 + 8;
+		const CCoord skinGap = 8;
+		const CCoord skinW = (cardW - 2 * kCardPad - skinGap) / 2.0;
+		for (int i = 0; i < 2; i++)
+		{
+			const CCoord left = cardL + kCardPad + i * (skinW + skinGap);
+			mSettingsSkinRect[i] = R (left, skinTop, left + skinW, skinTop + 32);
+		}
 
 		mSettingsCloseRect = R (cardL + cardW - kCardPad - 90, cardT + cardH - 16 - 32,
 		                        cardL + cardW - kCardPad, cardT + cardH - 16);
@@ -486,6 +692,22 @@ int RootView::stepOf (ParamID id) const
 }
 
 //------------------------------------------------------------------------
+Widget* RootView::findValueWidget (ParamID id)
+{
+	if (auto* w = findWidget (id, WidgetKind::Slider))
+		return w;
+	return findWidget (id, WidgetKind::Knob);
+}
+
+//------------------------------------------------------------------------
+const Widget* RootView::findValueWidget (ParamID id) const
+{
+	if (const auto* w = findWidget (id, WidgetKind::Slider))
+		return w;
+	return findWidget (id, WidgetKind::Knob);
+}
+
+//------------------------------------------------------------------------
 void RootView::setStep (ParamID id, int step)
 {
 	if (auto* seg = findWidget (id, WidgetKind::Segmented))
@@ -497,8 +719,9 @@ void RootView::setStep (ParamID id, int step)
 		}
 		return;
 	}
-	// Input and Output are detented sliders, not segmented controls.
-	if (auto* sl = findWidget (id, WidgetKind::Slider))
+	// Input and Output are detented sliders (Glass) or knobs (Hardware), not
+	// segmented controls.
+	if (auto* sl = findValueWidget (id))
 	{
 		const double n = stepToNormalized (step, sl->detents);
 		if (std::fabs (sl->norm - n) > 1e-9)
@@ -536,7 +759,7 @@ void RootView::setToggle (ParamID id, bool on)
 //------------------------------------------------------------------------
 void RootView::setContinuous (ParamID id, double normalized)
 {
-	if (auto* sl = findWidget (id, WidgetKind::Slider))
+	if (auto* sl = findValueWidget (id))
 	{
 		if (std::fabs (sl->norm - normalized) > 1e-9)
 		{
@@ -637,9 +860,9 @@ void RootView::updateFit ()
 		mFit = CGraphicsTransform ();
 		return;
 	}
-	const double scale = std::min (vw / kPanelWidth, vh / kPanelHeight);
-	const double offsetX = (vw - kPanelWidth * scale) * 0.5;
-	const double offsetY = (vh - kPanelHeight * scale) * 0.5;
+	const double scale = std::min (vw / mDesignWidth, vh / mDesignHeight);
+	const double offsetX = (vw - mDesignWidth * scale) * 0.5;
+	const double offsetY = (vh - mDesignHeight * scale) * 0.5;
 	mFit = CGraphicsTransform (scale, 0, 0, scale, offsetX, offsetY);
 }
 
@@ -679,6 +902,32 @@ void RootView::setRefreshRateHz (int hz)
 	mRefreshRateHz = hz;
 	if (mTimer)
 		startTimer ();
+	invalid ();
+}
+
+//------------------------------------------------------------------------
+// Just the settings overlay's own record of the current value, for painting
+// the selected pill and hit-testing it -- see the class comment on
+// setScalePercent() in editor.h for why the actual window resize doesn't
+// happen here.
+//------------------------------------------------------------------------
+void RootView::setScalePercent (int pct)
+{
+	if (pct != 25 && pct != 50 && pct != 100 && pct != 150 && pct != 200)
+		pct = 100;
+	if (mScalePercent == pct)
+		return;
+	mScalePercent = pct;
+	invalid ();
+}
+
+//------------------------------------------------------------------------
+void RootView::setTransparentBackground (bool on)
+{
+	if (mTransparentBackground == on)
+		return;
+	mTransparentBackground = on;
+	invalidateChrome ();
 	invalid ();
 }
 
@@ -811,7 +1060,20 @@ void RootView::invalidateChrome ()
 //------------------------------------------------------------------------
 void RootView::ensureChrome (CDrawContext* context)
 {
-	const double scale = getFrame () ? getFrame ()->getScaleFactor () : 1.0;
+	// getScaleFactor() is CFrame's content-scale * user zoom (see
+	// VST3Editor::setZoomFactor -> CFrame::setZoom). Content scale on a real
+	// HiDPI display is always >= 1 (more physical pixels per logical point,
+	// for crispness), which is the only case COffscreenContext's backing
+	// store was ever exercised at before the window-scale feature. Zoom
+	// below 100% legitimately drives this under 1.0 -- clamp it here: this
+	// cache has nothing to gain from a *lower*-density backing store than
+	// its own logical size (drawChrome always paints the fixed design
+	// canvas), and feeding a sub-1 scale into a HiDPI-cache code path that
+	// was never designed to shrink is what left only a top-left fraction of
+	// the chrome (and any wallpaper) visible at 50%/25% zoom -- the eventual
+	// on-screen size still comes from CFrame's own zoom transform wrapping
+	// this view's draw output, not from this bitmap's resolution.
+	const double scale = std::max (1.0, getFrame () ? getFrame ()->getScaleFactor () : 1.0);
 	if (mChrome && mChromeDark == mDark && mChromeBgTokenCached == mChromeBgToken &&
 	    std::fabs (mChromeScale - scale) < 1e-6)
 		return;
@@ -855,11 +1117,16 @@ void RootView::drawChrome (CDrawContext* context)
 	// Letterbox bars, painted at the view's real size, outside mFit -- when
 	// the view isn't exactly kPanelWidth x kPanelHeight, this is what shows
 	// either side of the scaled, centred content below rather than leaving
-	// the host's own background (or nothing) showing through.
-	context->setFillColor (t.windowBg);
-	context->drawRect (view, kDrawFilled);
+	// the host's own background (or nothing) showing through. Skipped
+	// entirely in transparent mode, same reasoning as paintBackdrop's own
+	// windowBg fill.
+	if (!mTransparentBackground)
+	{
+		context->setFillColor (t.windowBg);
+		context->drawRect (view, kDrawFilled);
+	}
 
-	const CRect design (0, 0, kPanelWidth, kPanelHeight);
+	const CRect design (0, 0, mDesignWidth, mDesignHeight);
 	const SkinContext sc {t, *this, mDark != 0};
 
 	// Skip pushing an identity transform even though it would be a
@@ -879,16 +1146,35 @@ void RootView::draw (CDrawContext* context)
 {
 	context->setDrawMode (kAntiAliasing);
 
-	ensureChrome (context);
-	if (mChrome)
+	if (mTransparentBackground)
 	{
-		CRect view (getViewSize ());
-		context->drawBitmap (mChrome, view);
+		// ensureChrome()'s cache is a COffscreenContext bitmap, and nothing
+		// else in this codebase has ever needed one to hold real per-pixel
+		// transparency -- verified it does not: its backing defaults fully
+		// opaque, so blitting it here would paint solid black wherever
+		// paintBackdrop's fills are skipped instead of showing the host
+		// through, defeating the entire point of this mode. Draw straight
+		// onto the real frame context instead, exactly like every
+		// interactive widget below already does -- that context is the one
+		// actually composited by the host, and IS see-through wherever
+		// nothing is painted onto it (see the .uidesc template's own
+		// transparent="true"). Costs the cache's redraw-skipping while this
+		// mode is on; correctness wins that trade.
+		drawChrome (context);
+	}
+	else
+	{
+		ensureChrome (context);
+		if (mChrome)
+		{
+			CRect view (getViewSize ());
+			context->drawBitmap (mChrome, view);
+		}
 	}
 
 	const mac::Theme t = theme ();
 	const SkinContext sc {t, *this, mDark != 0};
-	const CRect design (0, 0, kPanelWidth, kPanelHeight);
+	const CRect design (0, 0, mDesignWidth, mDesignHeight);
 
 	// See drawChrome()'s identical guard for why this only pushes when it
 	// actually does something.
@@ -904,6 +1190,9 @@ void RootView::draw (CDrawContext* context)
 			mSkin->paintWidget (context, w, sc);
 	for (const auto& w : mWidgets)
 		if (w.kind == WidgetKind::Slider)
+			mSkin->paintWidget (context, w, sc);
+	for (const auto& w : mWidgets)
+		if (w.kind == WidgetKind::Knob)
 			mSkin->paintWidget (context, w, sc);
 	for (const auto& w : mWidgets)
 		if (w.kind == WidgetKind::Switch)
@@ -927,7 +1216,7 @@ void RootView::draw (CDrawContext* context)
 std::string RootView::gainStepText (ParamID id) const
 {
 	double norm = 0.0;
-	if (const auto* sl = findWidget (id, WidgetKind::Slider))
+	if (const auto* sl = findValueWidget (id))
 		norm = sl->norm;
 	const double db = normalizedToAttenuatorDb (norm);
 	if (db <= -600.0)
@@ -940,16 +1229,20 @@ std::string RootView::gainStepText (ParamID id) const
 //------------------------------------------------------------------------
 std::string RootView::attackText () const
 {
-	const int step = clampIndex (stepOf (kParamAttackId), kTimeStepCount);
-	const double us = attackStepToSeconds (step) * 1e6;
+	double norm = kAttackDefaultNormalized;
+	if (const auto* w = findValueWidget (kParamAttackId))
+		norm = w->norm;
+	const double us = attackNormalizedToSeconds (norm) * 1e6;
 	return fmt ("%d %ss", static_cast<int> (std::lround (us)), kMicro);
 }
 
 //------------------------------------------------------------------------
 std::string RootView::releaseText () const
 {
-	const int step = clampIndex (stepOf (kParamReleaseId), kTimeStepCount);
-	const double ms = releaseStepToSeconds (step) * 1e3;
+	double norm = kReleaseDefaultNormalized;
+	if (const auto* w = findValueWidget (kParamReleaseId))
+		norm = w->norm;
+	const double ms = releaseNormalizedToSeconds (norm) * 1e3;
 	return fmt ("%d ms", static_cast<int> (std::lround (ms)));
 }
 
@@ -966,7 +1259,7 @@ std::string RootView::ratioText () const
 std::string RootView::mixText () const
 {
 	double norm = 1.0;
-	if (const auto* sl = findWidget (kParamMixId, WidgetKind::Slider))
+	if (const auto* sl = findValueWidget (kParamMixId))
 		norm = sl->norm;
 	return fmt ("%d%%", static_cast<int> (std::lround (normalizedToMixPercent (norm))));
 }
@@ -975,7 +1268,7 @@ std::string RootView::mixText () const
 std::string RootView::trimText () const
 {
 	double norm = 0.5;
-	if (const auto* sl = findWidget (kParamTrimId, WidgetKind::Slider))
+	if (const auto* sl = findValueWidget (kParamTrimId))
 		norm = sl->norm;
 	const double db = normalizedToTrimDb (norm);
 	if (db < -0.05)
@@ -1022,6 +1315,18 @@ const CRect& RootView::settingsRateRect (int index) const
 	return mSettingsRateRect[std::clamp (index, 0, 2)];
 }
 
+//------------------------------------------------------------------------
+const CRect& RootView::settingsScaleRect (int index) const
+{
+	return mSettingsScaleRect[std::clamp (index, 0, 4)];
+}
+
+//------------------------------------------------------------------------
+const CRect& RootView::settingsSkinRect (int index) const
+{
+	return mSettingsSkinRect[std::clamp (index, 0, 1)];
+}
+
 //========================================================================
 // Interaction
 //
@@ -1041,11 +1346,21 @@ CMouseEventResult RootView::onMouseDown (CPoint& where, const CButtonState& butt
 
 	if (mSettingsOpen)
 	{
-		if (hit (mSettingsSkinRect, where))
 		{
-			const bool nowGlass = (mSkin->id () == SkinId::Glass);
-			mController->requestSkinSwitch (nowGlass ? 0 : 1);
-			return kMouseEventHandled;
+			// Order matches skins::all(): index 0 = Hardware, index 1 =
+			// Glass -- also requestSkinSwitch()'s own 0/1 convention, so the
+			// index needs no translation.
+			bool skinHit = false;
+			for (int i = 0; i < 2 && !skinHit; i++)
+			{
+				if (hit (mSettingsSkinRect[i], where))
+				{
+					mController->requestSkinSwitch (i);
+					skinHit = true;
+				}
+			}
+			if (skinHit)
+				return kMouseEventHandled;
 		}
 		if (hit (mSettingsCloseRect, where))
 		{
@@ -1073,6 +1388,24 @@ CMouseEventResult RootView::onMouseDown (CPoint& where, const CButtonState& butt
 					return kMouseEventHandled;
 				}
 			}
+		}
+		{
+			static constexpr int kScaleChoices[5] = {25, 50, 100, 150, 200};
+			for (int i = 0; i < 5; i++)
+			{
+				if (hit (mSettingsScaleRect[i], where))
+				{
+					mController->requestScalePercent (kScaleChoices[i]);
+					setScalePercent (kScaleChoices[i]);
+					return kMouseEventHandled;
+				}
+			}
+		}
+		if (hit (mSettingsTransparentRect, where))
+		{
+			mController->setTransparentBackground (!mTransparentBackground);
+			setTransparentBackground (!mTransparentBackground);
+			return kMouseEventHandled;
 		}
 		if (!hit (mSettingsCardRect, where))
 			closeSettings ();   // click on the scrim dismisses the panel
@@ -1122,8 +1455,9 @@ CMouseEventResult RootView::onMouseDown (CPoint& where, const CButtonState& butt
 		mDrag = Drag::Segment;
 		mDragId = w.id;
 		const int n = static_cast<int> (w.labels.size ());
-		const int index =
-		    clampIndex (static_cast<int> ((where.x - w.r.left) / (w.r.getWidth () / n)), n);
+		const int index = w.vertical
+		    ? clampIndex (static_cast<int> ((where.y - w.r.top) / (w.r.getHeight () / n)), n)
+		    : clampIndex (static_cast<int> ((where.x - w.r.left) / (w.r.getWidth () / n)), n);
 		if (index != w.step)
 			mController->changeStep (w.id, index);
 		return kMouseEventHandled;
@@ -1144,6 +1478,24 @@ CMouseEventResult RootView::onMouseDown (CPoint& where, const CButtonState& butt
 		mDrag = Drag::Slider;
 		mDragId = w.id;
 		applySliderFrom (w, where.x, buttons.getModifierState () & kShift);
+		return kMouseEventHandled;
+	}
+
+	for (auto& w : mWidgets)
+	{
+		if (w.kind != WidgetKind::Knob || !hit (w.r, where))
+			continue;
+
+		if (buttons.isDoubleClick ())
+		{
+			mController->changeContinuous (w.id, w.defaultNorm);
+			return kMouseEventHandled;
+		}
+
+		mDrag = Drag::Knob;
+		mDragId = w.id;
+		mKnobDragStartY = where.y;
+		mKnobDragStartNorm = w.norm;
 		return kMouseEventHandled;
 	}
 
@@ -1171,10 +1523,19 @@ CMouseEventResult RootView::onMouseMoved (CPoint& where, const CButtonState& but
 		if (auto* seg = findWidget (mDragId, WidgetKind::Segmented))
 		{
 			const int n = static_cast<int> (seg->labels.size ());
-			const int index =
-			    clampIndex (static_cast<int> ((where.x - seg->r.left) / (seg->r.getWidth () / n)), n);
+			const int index = seg->vertical
+			    ? clampIndex (static_cast<int> ((where.y - seg->r.top) / (seg->r.getHeight () / n)), n)
+			    : clampIndex (static_cast<int> ((where.x - seg->r.left) / (seg->r.getWidth () / n)), n);
 			if (index != seg->step)
 				mController->changeStep (seg->id, index);
+			return kMouseEventHandled;
+		}
+	}
+	else if (mDrag == Drag::Knob)
+	{
+		if (auto* knob = findWidget (mDragId, WidgetKind::Knob))
+		{
+			applyKnobFrom (*knob, where.y, buttons.getModifierState () & kShift);
 			return kMouseEventHandled;
 		}
 	}
@@ -1226,6 +1587,34 @@ void RootView::applySliderFrom (Widget& sl, CCoord x, bool fine)
 
 	if (std::fabs (n - sl.norm) > 1e-9)
 		mController->changeContinuous (sl.id, n);
+}
+
+//------------------------------------------------------------------------
+// Relative vertical drag, unlike applySliderFrom's absolute x-position
+// mapping -- every real (and virtually every software) knob works this way.
+// mKnobDragStartY/mKnobDragStartNorm are latched in onMouseDown, so this is
+// safe to call repeatedly from onMouseMoved without accumulating drift.
+//------------------------------------------------------------------------
+void RootView::applyKnobFrom (Widget& knob, CCoord y, bool fine)
+{
+	if (!mController)
+		return;
+
+	// 150 design-space px of vertical travel covers the knob's full 0..1
+	// range -- about the same physical distance a Slider's own full-width
+	// travel covers on the Gain card, so the two shapes feel consistent
+	// even though the layouts that use each are different. Shift drags at
+	// a quarter rate, matching applySliderFrom's own fine-adjust rate.
+	constexpr double kFullTravelPx = 150.0;
+	const double rate = fine ? 0.25 : 1.0;
+	double n = mKnobDragStartNorm + (mKnobDragStartY - y) / kFullTravelPx * rate;
+	n = std::clamp (n, 0.0, 1.0);
+
+	if (knob.snap && knob.detents > 1)
+		n = stepToNormalized (normalizedToStep (n, knob.detents), knob.detents);
+
+	if (std::fabs (n - knob.norm) > 1e-9)
+		mController->changeContinuous (knob.id, n);
 }
 
 //========================================================================

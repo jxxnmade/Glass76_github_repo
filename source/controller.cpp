@@ -13,8 +13,10 @@
 #include "pluginterfaces/base/ustring.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -101,6 +103,59 @@ public:
 	}
 };
 
+//------------------------------------------------------------------------
+// Attack and release. Continuous now -- position 1..7 printed as on the
+// faceplate, normalized 0..1 mapping onto it linearly (see
+// attackNormalizedToSeconds/releaseNormalizedToSeconds in params.h, which
+// this and the UI both go through so the two can never disagree on what a
+// given position actually resolves to).
+//------------------------------------------------------------------------
+class TimeConstantParameter : public Parameter
+{
+public:
+	TimeConstantParameter (const TChar* title, ParamID tag, bool isAttack, double defaultNormalized)
+	: mIsAttack (isAttack)
+	{
+		UString (info.title, str16BufferSize (String128)).assign (title);
+		info.id = tag;
+		info.stepCount = 0;   // continuous
+		info.defaultNormalizedValue = defaultNormalized;
+		info.flags = ParameterInfo::kCanAutomate;
+		setNormalized (defaultNormalized);
+	}
+
+	void toString (ParamValue normalized, String128 string) const SMTG_OVERRIDE
+	{
+		const double position = 1.0 + std::clamp (normalized, 0.0, 1.0) * 6.0;
+		char text[32];
+		if (mIsAttack)
+			std::snprintf (text, sizeof (text), "%.1f (%.0f us)", position,
+			               attackNormalizedToSeconds (normalized) * 1e6);
+		else
+			std::snprintf (text, sizeof (text), "%.1f (%.0f ms)", position,
+			               releaseNormalizedToSeconds (normalized) * 1e3);
+		UString (string, str16BufferSize (String128)).assign (text);
+	}
+
+	bool fromString (const TChar* string, ParamValue& normalized) const SMTG_OVERRIDE
+	{
+		// Only the leading position number is parsed -- "(234 us)" and
+		// similar is toString()'s own output echoed back by a host, not
+		// something a user is expected to type.
+		char text[64] {};
+		UString (const_cast<TChar*> (string), 64).toAscii (text, sizeof (text));
+		double position = 0.0;
+		if (std::sscanf (text, "%lf", &position) != 1)
+			return false;
+		position = std::clamp (position, 1.0, 7.0);
+		normalized = (position - 1.0) / 6.0;
+		return true;
+	}
+
+private:
+	bool mIsAttack;
+};
+
 } // anonymous namespace
 
 //------------------------------------------------------------------------
@@ -125,17 +180,11 @@ tresult PLUGIN_API Glass76Controller::initialize (FUnknown* context)
 	parameters.addParameter (STR16 ("Auto Makeup"), nullptr, 1, 0.,
 	                         ParameterInfo::kCanAutomate, kParamAutoMakeupId);
 
-	//--- Attack / Release, printed as the panel positions ---------------
-	static const TChar* const attackStrings[kTimeStepCount] = {
-		STR16 ("1 (800 us)"), STR16 ("3 (234 us)"), STR16 ("5 (68 us)"), STR16 ("7 (20 us)")
-	};
-	static const TChar* const releaseStrings[kTimeStepCount] = {
-		STR16 ("1 (1100 ms)"), STR16 ("3 (392 ms)"), STR16 ("5 (140 ms)"), STR16 ("7 (50 ms)")
-	};
-	addStringList (parameters, STR16 ("Attack"), kParamAttackId, nullptr,
-	               attackStrings, kTimeStepCount, kAttackDefaultStep);
-	addStringList (parameters, STR16 ("Release"), kParamReleaseId, nullptr,
-	               releaseStrings, kTimeStepCount, kReleaseDefaultStep);
+	//--- Attack / Release, continuous, printed as the panel positions ----
+	parameters.addParameter (new TimeConstantParameter (
+	    STR16 ("Attack"), kParamAttackId, true, kAttackDefaultNormalized));
+	parameters.addParameter (new TimeConstantParameter (
+	    STR16 ("Release"), kParamReleaseId, false, kReleaseDefaultNormalized));
 
 	//--- Ratio ----------------------------------------------------------
 	static const TChar* const ratioStrings[kRatioStepCount] = {
@@ -297,11 +346,9 @@ tresult PLUGIN_API Glass76Controller::setParamNormalized (ParamID tag, ParamValu
 	{
 		case kParamInputId:
 		case kParamOutputId:
-			mRoot->setContinuous (tag, value);
-			break;
 		case kParamAttackId:
 		case kParamReleaseId:
-			mRoot->setStep (tag, normalizedToStep (value, kTimeStepCount));
+			mRoot->setContinuous (tag, value);
 			break;
 		case kParamRatioId:
 			mRoot->setStep (tag, normalizedToStep (value, kRatioStepCount));
@@ -357,8 +404,6 @@ void Glass76Controller::changeStep (ParamID id, int step)
 	int count = 2;
 	switch (id)
 	{
-		case kParamAttackId:
-		case kParamReleaseId: count = kTimeStepCount;   break;
 		case kParamRatioId:   count = kRatioStepCount;  break;
 		case kParamMeterId:   count = kMeterStepCount;  break;
 		case kParamAnalogId:  count = kAnalogStepCount; break;
@@ -433,6 +478,15 @@ tresult PLUGIN_API Glass76Controller::setState (IBStream* state)
 	int32 skinId = 0;
 	const bool haveSkin = streamer.readInt32 (skinId);
 
+	// Appended for the window-scale feature (stage 3.5). Same story: an
+	// older stream ends before this point and the built-in 100% holds.
+	int32 scalePercent = 0;
+	const bool haveScale = streamer.readInt32 (scalePercent);
+
+	// Appended for the transparent-background feature. Same story again.
+	int32 transparentBg = 0;
+	const bool haveTransparentBg = streamer.readInt32 (transparentBg);
+
 	if (!mPrefsLoaded)
 	{
 		if (haveAppearance)
@@ -455,6 +509,18 @@ tresult PLUGIN_API Glass76Controller::setState (IBStream* state)
 		}
 		if (haveSkin)
 			mSkin = skinId ? 1 : 0;
+		if (haveScale)
+		{
+			mScalePercent = snapScalePercent (scalePercent);
+			if (mRoot)
+				mRoot->setScalePercent (mScalePercent);
+		}
+		if (haveTransparentBg)
+		{
+			mTransparentBackground = transparentBg != 0;
+			if (mRoot)
+				mRoot->setTransparentBackground (mTransparentBackground);
+		}
 	}
 
 	return kResultTrue;
@@ -474,6 +540,8 @@ tresult PLUGIN_API Glass76Controller::getState (IBStream* state)
 		                   static_cast<int32> (mBackgroundImagePath.size ()));
 	streamer.writeInt32 (mRefreshRateHz);
 	streamer.writeInt32 (mSkin);
+	streamer.writeInt32 (mScalePercent);
+	streamer.writeInt32 (mTransparentBackground ? 1 : 0);
 	return kResultTrue;
 }
 
@@ -494,12 +562,16 @@ void Glass76Controller::ensurePrefsLoaded ()
 	mBackgroundImagePath = p.backgroundImage;
 	mRefreshRateHz = (p.refreshRateHz == 60 || p.refreshRateHz == 120) ? p.refreshRateHz : 30;
 	mSkin = (p.skin == "glass") ? 1 : 0;
+	mScalePercent = snapScalePercent (p.scalePercent);
+	mTransparentBackground = p.transparentBackground;
 
 	if (mRoot)
 	{
 		mRoot->setAppearance (mAppearance);
 		mRoot->setBackgroundImagePath (mBackgroundImagePath);
 		mRoot->setRefreshRateHz (mRefreshRateHz);
+		mRoot->setScalePercent (mScalePercent);
+		mRoot->setTransparentBackground (mTransparentBackground);
 	}
 }
 
@@ -530,6 +602,8 @@ void Glass76Controller::flushPrefsNow ()
 	p.appearance = mAppearance ? "dark" : "light";
 	p.refreshRateHz = mRefreshRateHz;
 	p.backgroundImage = mBackgroundImagePath;
+	p.scalePercent = mScalePercent;
+	p.transparentBackground = mTransparentBackground;
 
 	mPrefsDirty = false;
 	mPrefsDirtyTicks = 0;
@@ -551,13 +625,64 @@ void Glass76Controller::flushPrefsNow ()
 
 //------------------------------------------------------------------------
 // Each skin has its own .uidesc template -- see resource/glass76.uidesc --
-// so it can declare its own native window size. mSkin picks which one
-// opens; requestSkinSwitch() is what moves between them once an editor is
-// already up.
+// and, since stage 5, its own window size too (RootView::designSize).
+// mSkin picks which one opens; requestSkinSwitch() is what moves between
+// them once an editor is already up.
 //------------------------------------------------------------------------
 namespace {
 const char* templateNameFor (int skin) { return (skin == 1) ? "view_glass" : "view_hardware"; }
+
+// The five window-scale steps the settings overlay offers, as zoom factors
+// -- also handed to VST3Editor::setAllowedZoomFactors so the host's native
+// "Zoom" context-menu item offers exactly the same set. Kept in this one
+// place; snapScalePercent() below and the settings-overlay geometry/paint
+// code (editor.cpp, skin_glass.cpp) each have their own copy of the
+// percentage values because none of the three has a reasonable way to share
+// a single array without a new shared header for five constants -- if a
+// sixth step is ever added, all three need the same edit, along with
+// mSettingsScaleRect's fixed size.
+const std::vector<double>& allowedZoomFactors ()
+{
+	static const std::vector<double> factors {0.25, 0.5, 1.0, 1.5, 2.0};
+	return factors;
+}
+
+#if SMTG_OS_MACOS
+// Temporary diagnostic: traces what the host actually hands us for content
+// scale on macOS before stage 3.5 decides whether VST3Editor's existing
+// IPlugViewContentScaleSupport handling (vst3editor.cpp, unconditionally
+// compiled in via VST3_CONTENT_SCALE_SUPPORT) needs a Retina-specific
+// override here, or whether the window is simply too wide in logical points
+// for the display. Remove once that question has an answer recorded in
+// CHANGELOG.md -- see the stage 3.5 plan's "macOS content scale" section.
+class Glass76DiagnosticEditor : public VSTGUI::VST3Editor
+{
+public:
+	using VST3Editor::VST3Editor;
+
+protected:
+	Steinberg::tresult PLUGIN_API setContentScaleFactor (ScaleFactor factor) override
+	{
+		std::fprintf (stderr, "[Glass76] setContentScaleFactor(%f)\n", static_cast<double> (factor));
+		return VST3Editor::setContentScaleFactor (factor);
+	}
+};
+using PlatformEditor = Glass76DiagnosticEditor;
+#else
+using PlatformEditor = VSTGUI::VST3Editor;
+#endif
+
 } // anonymous namespace
+
+//------------------------------------------------------------------------
+int Glass76Controller::snapScalePercent (int pct)
+{
+	static constexpr int kChoices[5] = {25, 50, 100, 150, 200};
+	for (int c : kChoices)
+		if (c == pct)
+			return c;
+	return 100;
+}
 
 //------------------------------------------------------------------------
 IPlugView* PLUGIN_API Glass76Controller::createView (FIDString name)
@@ -568,7 +693,14 @@ IPlugView* PLUGIN_API Glass76Controller::createView (FIDString name)
 		// setState() at all, so this is the one call site guaranteed to run
 		// before the editor opens.
 		ensurePrefsLoaded ();
-		return new VSTGUI::VST3Editor (this, templateNameFor (mSkin), "glass76.uidesc");
+		auto* editor = new PlatformEditor (this, templateNameFor (mSkin), "glass76.uidesc");
+		editor->setAllowedZoomFactors (allowedZoomFactors ());
+		// The frame doesn't exist yet -- setZoomFactor just records the
+		// value now, and VST3Editor::open() sizes the frame at
+		// getAbsScaleFactor() before the window is ever shown, so this opens
+		// at the right size with no visible resize.
+		editor->setZoomFactor (mScalePercent / 100.0);
+		return editor;
 	}
 
 	return nullptr;
@@ -584,21 +716,38 @@ IPlugView* PLUGIN_API Glass76Controller::createView (FIDString name)
 VSTGUI::CView* Glass76Controller::createCustomView (VSTGUI::UTF8StringPtr name,
                                                     const VSTGUI::UIAttributes& /*attributes*/,
                                                     const VSTGUI::IUIDescription* /*description*/,
-                                                    VSTGUI::VST3Editor* /*editor*/)
+                                                    VSTGUI::VST3Editor* editor)
 {
 	if (name && std::strcmp (name, "root") == 0)
 	{
-		const bool glass = (mSkin == 1);
-		const SkinId skinId = glass ? SkinId::Glass : SkinId::Hardware;
-		const VSTGUI::CCoord w = glass ? RootView::kPanelWidth : RootView::kHardwareWindowWidth;
-		const VSTGUI::CCoord h = glass ? RootView::kPanelHeight : RootView::kHardwareWindowHeight;
+		const SkinId skinId = (mSkin == 1) ? SkinId::Glass : SkinId::Hardware;
+		const VSTGUI::CPoint size = RootView::designSize (skinId);
 
-		auto* root = new RootView (this, skinId, VSTGUI::CRect (0, 0, w, h));
+		// requestSkinSwitch() already called setEditorSizeConstrains() on
+		// mEditor before exchangeView() got here, but that call computed its
+		// target against whatever the frame's size happened to be at that
+		// exact moment -- before the old skin's content was even torn down.
+		// Re-asserting it here, now that the new view actually exists, is
+		// what makes the resize land correctly rather than racing: at a
+		// large zoom mismatch between two skins' design sizes (e.g. 25%,
+		// where Hardware's 1240-wide and Glass's 880-wide canvases differ by
+		// 90 physical px) a host can otherwise leave the window at the old
+		// skin's size while this skin's full design-space content renders
+		// into it, which looks like most of the panel got cropped off
+		// rather than the whole thing being consistently tiny. Harmless on
+		// a fresh open too -- VST3Editor::open() already sizes correctly by
+		// itself; this just repeats the same request against the same
+		// editor and target size.
+		editor->setEditorSizeConstrains (size, size);
+
+		auto* root = new RootView (this, skinId, VSTGUI::CRect (0, 0, size.x, size.y));
 		mRoot = root;
 		root->setAppearance (mAppearance);
 		if (!mBackgroundImagePath.empty ())
 			root->setBackgroundImagePath (mBackgroundImagePath);
 		root->setRefreshRateHz (mRefreshRateHz);
+		root->setScalePercent (mScalePercent);
+		root->setTransparentBackground (mTransparentBackground);
 
 		// Seed the view with the values the host already has, so it opens
 		// showing the real state rather than the defaults.
@@ -622,6 +771,18 @@ VSTGUI::CView* Glass76Controller::createCustomView (VSTGUI::UTF8StringPtr name,
 void Glass76Controller::didOpen (VSTGUI::VST3Editor* editor)
 {
 	mEditor = editor;
+
+#if SMTG_OS_MACOS
+	// See the Glass76DiagnosticEditor comment in createView(): temporary,
+	// pending the stage 3.5 macOS content-scale finding. getRect() is
+	// IPlugView's own idea of the view's size in logical points -- what the
+	// host asked for / was granted -- independent of whatever
+	// setContentScaleFactor() separately reports through the diagnostic
+	// subclass's override.
+	const Steinberg::ViewRect r = editor->getRect ();
+	std::fprintf (stderr, "[Glass76] didOpen: getRect() = %dx%d\n",
+	             static_cast<int> (r.getWidth ()), static_cast<int> (r.getHeight ()));
+#endif
 }
 
 //------------------------------------------------------------------------
@@ -629,6 +790,40 @@ void Glass76Controller::willClose (VSTGUI::VST3Editor* editor)
 {
 	if (mEditor == editor)
 		mEditor = nullptr;
+}
+
+//------------------------------------------------------------------------
+// setZoomFactor is idempotent (VST3Editor::setZoomFactor early-returns if
+// the factor is unchanged) and drives the actual resize itself via
+// CFrame::setZoom -- there is nothing else to call here, and in particular
+// no requestResize: a second resize request racing the one setZoom already
+// issued is exactly the failure mode the plan's risk section calls out.
+//------------------------------------------------------------------------
+void Glass76Controller::requestScalePercent (int pct)
+{
+	setScalePercent (pct);   // updates mScalePercent and persists
+	if (mEditor)
+		mEditor->setZoomFactor (mScalePercent / 100.0);
+}
+
+//------------------------------------------------------------------------
+// Reached from two places: requestScalePercent() above (via the
+// setZoomFactor() call it just made) and, independently, VST3Editor's own
+// "Zoom" context-submenu path (built off setAllowedZoomFactors() in
+// createView()). setZoomFactor() has already taken effect by the time this
+// runs either way, so there is nothing left to apply -- only mRoot's own
+// idea of the current value (which pill paints selected, next time the
+// settings overlay opens) needs to be kept in sync, since a menu-driven
+// change never goes through RootView::setScalePercent() the way a
+// pill click does.
+//------------------------------------------------------------------------
+void Glass76Controller::onZoomChanged (VSTGUI::VST3Editor* editor, double newZoom)
+{
+	if (editor != mEditor)
+		return;
+	setScalePercent (static_cast<int> (std::lround (newZoom * 100.0)));
+	if (mRoot)
+		mRoot->setScalePercent (mScalePercent);
 }
 
 //------------------------------------------------------------------------
@@ -656,9 +851,7 @@ void Glass76Controller::requestSkinSwitch (int skin)
 	// consumes this flag on the other side.
 	mReopenSettingsAfterSwitch = mRoot && mRoot->settingsOpen ();
 
-	const bool glass = (mSkin == 1);
-	const VSTGUI::CPoint newSize (glass ? RootView::kPanelWidth : RootView::kHardwareWindowWidth,
-	                              glass ? RootView::kPanelHeight : RootView::kHardwareWindowHeight);
+	const VSTGUI::CPoint newSize = RootView::designSize (mSkin == 1 ? SkinId::Glass : SkinId::Hardware);
 	mEditor->setEditorSizeConstrains (newSize, newSize);
 	mEditor->exchangeView (templateNameFor (mSkin));
 }

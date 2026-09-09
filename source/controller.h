@@ -61,6 +61,15 @@ public:
 	void didOpen (VSTGUI::VST3Editor* editor) override;
 	void willClose (VSTGUI::VST3Editor* editor) override;
 
+	/** Fires whenever VST3Editor::setZoomFactor takes effect -- both from
+	    requestScalePercent() below and from the native "Zoom" context-menu
+	    VST3Editor itself builds off setAllowedZoomFactors(). Keeps the
+	    persisted value in sync with a zoom picked from that menu rather than
+	    through the settings overlay. Never re-drives setZoomFactor itself
+	    (that would just re-enter this callback for no reason -- VST3Editor
+	    has already applied the zoom by the time this runs). */
+	void onZoomChanged (VSTGUI::VST3Editor* editor, double newZoom) override;
+
 	//--- outgoing edits, called from RootView ---------------------------
 	void changeStep (Steinberg::Vst::ParamID id, int step);
 	void changePill (Steinberg::Vst::ParamID id, bool on);
@@ -103,10 +112,43 @@ public:
 		markPrefsDirty ();
 	}
 
+	/** Skips every opaque backdrop and card fill so the host's own window
+	    shows through everywhere but the glass edge stack, text and controls
+	    -- same story as appearance: a UI preference, not a parameter. */
+	bool getTransparentBackground () const { return mTransparentBackground; }
+	void setTransparentBackground (bool on)
+	{
+		mTransparentBackground = on;
+		markPrefsDirty ();
+	}
+
+	/** User zoom, as a percentage of the design canvas: one of 25, 50, 100,
+	    150, 200 (anything else snaps to 100). A UI preference like the ones
+	    above, but with a side effect the others don't have: when an editor is
+	    already open, this also drives its actual window size via
+	    VST3Editor::setZoomFactor -- see requestScalePercent() below, which is
+	    what the settings-overlay pill and the native Zoom context-menu path
+	    (onZoomChanged) both call. getScalePercent()/setScalePercent() alone
+	    only touch the persisted value, matching every other preference here;
+	    nothing calls setScalePercent() directly except ensurePrefsLoaded(),
+	    setState()'s fallback branch, and requestScalePercent() itself. */
+	int getScalePercent () const { return mScalePercent; }
+	void setScalePercent (int pct)
+	{
+		mScalePercent = snapScalePercent (pct);
+		markPrefsDirty ();
+	}
+
+	/** The interactive version of setScalePercent(): also resizes the
+	    currently open editor, live, via VST3Editor::setZoomFactor -- what the
+	    settings-overlay's zoom pills actually call. A no-op if `pct` (after
+	    snapping) already matches. Safe to call with no editor open; the new
+	    value simply takes effect the next time one opens. */
+	void requestScalePercent (int pct);
+
 	/** 0 = Hardware, 1 = Glass. Same story again -- a UI preference, not a
-	    parameter. The window this opens at is now real (see
-	    RootView::kPanelWidth/kHardwareWindowWidth); the *paint* stays Glass
-	    either way until the Hardware faceplate skin exists. Silent: updates
+	    parameter. Each skin opens its own real faceplate and window size
+	    now (RootView::designSize) -- stage 5. Silent: updates
 	    the persisted value and, if an editor already has this skin's own
 	    template open, nothing else -- next open (or requestSkinSwitch)
 	    picks it up. */
@@ -156,6 +198,11 @@ public:
 	DELEGATE_REFCOUNT (EditController)
 
 private:
+	/** Snaps to the nearest of {25, 50, 100, 150, 200}; anything else (an
+	    old/foreign preferences.json, a state stream from a build with a
+	    different set) falls back to 100. */
+	static int snapScalePercent (int pct);
+
 	RootView* mRoot {nullptr};
 	VSTGUI::VST3Editor* mEditor {nullptr};   // tracked via didOpen/willClose, for requestSkinSwitch
 	bool mReopenSettingsAfterSwitch {false}; // sticky settings panel across exchangeView
@@ -163,6 +210,8 @@ private:
 	std::string mBackgroundImagePath;
 	int mRefreshRateHz {30};
 	int mSkin {0};   // 0 = Hardware, 1 = Glass; see setSkin()
+	int mScalePercent {100};   // see getScalePercent()/requestScalePercent()
+	bool mTransparentBackground {false};
 
 	//--- global preferences file ------------------------------------------
 	bool mPrefsLoaded {false};      // true once preferences.json was read successfully

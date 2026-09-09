@@ -1,11 +1,22 @@
 # Glass76
 
-A 1176-style FET compressor VST3, with a macOS 27 ("Liquid Glass") interface
-drawn from Apple's own UI kit metrics. Windows x64 and macOS (universal).
+A 1176-style FET compressor VST3. Two interfaces, switchable live from the
+Settings panel: **Glass**, a macOS 27 ("Liquid Glass") interface drawn from
+Apple's own UI kit metrics, and **Hardware**, a 1176-style rack faceplate --
+chicken-head knobs, a vertical Ratio stack, an analog VU meter needle -- built
+from the same widget model and painted procedurally, no bitmap assets.
+Windows x64 and macOS (universal).
 
 MIT licensed.
 
 ![Glass76, dark appearance](docs/images/editor-dark.png)
+
+**2.0.0-alpha**: the Hardware skin, the skin picker, a per-skin window size,
+a user zoom control (25-200%), and continuous Attack/Release are all new in
+this release and have had comparatively little real-world use yet -- hence
+alpha, not a finished 2.0.0. See `CHANGELOG.md` for the full list and for
+what's still rough (the transparent-background preference currently leaves
+card fills opaque instead of fully see-through; see its own entry there).
 
 ## Install
 
@@ -81,8 +92,8 @@ holds the plug-in binary and the install copy fails.
 | 2 | Input | continuous slider (9 printed marks) | −∞, −43, −36, −30, −19.5, −18, −12, −6, 0 dB |
 | 3 | Output | continuous slider (9 printed marks) | same |
 | 4 | Auto makeup | switch | on / off |
-| 5 | Attack | segmented | positions 1, 3, 5, 7 |
-| 6 | Release | segmented | positions 1, 3, 5, 7 |
+| 5 | Attack | continuous slider (4 printed marks) | knob position 1 … 7, marked 1, 3, 5, 7 |
+| 6 | Release | continuous slider (4 printed marks) | knob position 1 … 7, marked 1, 3, 5, 7 |
 | 7 | Ratio | segmented | 20:1, 12:1, 8:1, 4:1, All |
 | 8 | Meter | segmented | GR, IN, OUT |
 | 9 | Comp Off | toolbar toggle | on / off |
@@ -91,12 +102,54 @@ holds the plug-in binary and the install copy fails.
 | 12 | Trim | bipolar slider | −18…+18 dB |
 
 Plus the VST3 `Bypass` parameter, which the host owns and draws itself, and
-three read-only meter parameters the processor uses to feed the gauge. The
-appearance toggle, the gear-icon Settings panel and its background image are
-UI-only state, mirrored in the controller so they survive a project reload,
-but are not automatable host parameters.
+three read-only meter parameters the processor uses to feed the gauge. Every
+row above is the same underlying parameter regardless of which skin is
+active -- Hardware renders Input/Output/Attack/Release/Mix/Trim as rotary
+knobs and Ratio/Meter as vertical button stacks instead of Glass's sliders
+and horizontal rows, but it's the same automation lane either way.
+
+The appearance toggle, the gear-icon Settings panel, its background image,
+the skin picker, the window-scale zoom (25/50/100/150/200%) and the
+transparent-background toggle are all UI-only state, mirrored in the
+controller so they survive a project reload, but none of them are
+automatable host parameters.
 
 ## Decisions worth knowing about
+
+**Attack and Release are knob positions, not milliseconds, and they're
+continuous.** The panel numbers 1/3/5/7 are the positions printed on an
+1176's stepped pots; the plug-in's own control is a continuous slider (Glass)
+or knob (Hardware) over the whole 1..7 range, not clamped to those four
+marks -- Glass still prints tick marks at 1/3/5/7 so a setting can be
+eyeballed against the hardware, but they're a reference, not a stop. The
+position maps to the hardware's actual time on an exponential (geometric)
+curve anchored at 1 and 7 -- attack 800 µs at position 1 down to 20 µs at 7,
+release 1100 ms down to 50 ms -- which also lands within measurement noise
+of the two printed intermediate positions it was fit against (234 µs / 68 µs
+for attack, 392 ms / 140 ms for release; see `SWEEP_ANALYSIS.md`). The
+resolved position and time are shown in the value column / under the knob
+(e.g. "3.4 (198 us)"). If literal 1/3/5/7 ms was wanted instead, change
+`attackPositionToSeconds` and `releasePositionToSeconds` in
+`source/params.h` — nothing else needs to move.
+
+**The Hardware skin's window is 1240×470; Glass's is 880×470 -- different
+sizes, one shared zoom.** Each skin keeps its own native size (its own
+`.uidesc` template), so switching skins resizes the window; the 25-200% zoom
+control (Settings → the row below Refresh rate) applies on top of whichever
+skin is active via `VSTGUI::VST3Editor::setZoomFactor`, independent of which
+one that is. The native "Zoom" item on the editor's own right-click context
+menu (where the host supports it) offers the same five steps and stays in
+sync with the Settings panel either way.
+
+**The transparent-background toggle is a known partial feature, not a bug
+report waiting to happen.** With it on, the window background and toolbar
+correctly go see-through to whatever is behind the plug-in window -- verified
+live, not just visually plausible -- but card fills currently stay opaque
+instead of showing through too, a Direct2D-specific compositing quirk with
+gradient/path-clip fills against a layered-transparent window that wasn't
+resolved before this release shipped. Off by default; turn it on from
+Settings if the look (or the working "half-transparent" version of it) is
+useful to you as-is.
 
 **Glass76 CLEAN and Glass76 Signature are two different DSP paths, not a
 tone knob.** Signature is the unchanged, CLA-76-calibrated build: hardware
@@ -263,17 +316,22 @@ sources, so a missing `.uidesc` or a font that did not get copied fails there
 too. It checks unity calibration, that 4:1 at 12 dB over threshold gives ~9 dB
 of reduction, that 20:1 reduces more, Comp Off, auto make-up, Mix at 0 %, Trim
 ±6 dB, the −∞ and 0 dB attenuator detents, the analog hum floor, and the meter
-round trip.
+round trip. `glass76_test --prefs-test` and `glass76_test --param-test` cover
+`prefs.h`/`.cpp`'s JSON reader/writer and the continuous Attack/Release curve
+directly -- pure C++, no plug-in or host needed for either.
 
-Current status: **validator 47/47, offline host 17/17**, from a clean rebuild
-on both Windows and macOS. CI runs both platforms' full suite on every push.
+Current status: **validator 47/47, offline host 17/17, prefs 20/20, param
+12/12**, from a clean rebuild on both Windows and macOS. CI runs both
+platforms' full suite on every push.
 
 Verified inside a real DAW: FL Studio on Windows only, so far -- the plug-in
-scans, loads, and all three meters track audio there. The macOS build passes
-CI (validator + offline host against the built bundle) but hasn't yet been
-run inside an actual Mac host; there's no Mac available to this project to
-check that on. Not yet verified on either platform: rendering at 125 % / 150 %
-(Windows) or Retina (macOS) display scaling. Reports on any of this are
+scans, loads, all three meters track audio, and the Hardware/Glass skin
+switch resizes the window correctly there. The macOS build passes CI
+(validator + offline host against the built bundle) but hasn't yet been run
+inside an actual Mac host; there's no Mac available to this project to check
+that on. Not yet verified on either platform: rendering at 125 % / 150 %
+(Windows) or Retina (macOS) *display* scaling -- distinct from the plug-in's
+own 25-200 % zoom control, which has been. Reports on any of this are
 welcome.
 
 ## Contributing

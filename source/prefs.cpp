@@ -467,6 +467,10 @@ void applyField (const std::string& key, const Value& v, Glass76Prefs& out)
 		out.refreshRateHz = static_cast<int32_t> (v.n);
 	else if (key == "backgroundImage" && v.kind == Value::Kind::String)
 		out.backgroundImage = v.s;
+	else if (key == "scalePercent" && v.kind == Value::Kind::Number)
+		out.scalePercent = static_cast<int32_t> (v.n);
+	else if (key == "transparentBackground" && v.kind == Value::Kind::Bool)
+		out.transparentBackground = v.b;
 }
 
 bool parseObject (Cursor& c, Glass76Prefs& out)
@@ -582,7 +586,10 @@ std::string prefs::serialize (const Glass76Prefs& p)
 	out += "  \"skin\": \"" + jsonEscape (p.skin) + "\",\n";
 	out += "  \"appearance\": \"" + jsonEscape (p.appearance) + "\",\n";
 	out += "  \"refreshRateHz\": " + std::to_string (p.refreshRateHz) + ",\n";
-	out += "  \"backgroundImage\": \"" + jsonEscape (p.backgroundImage) + "\"\n";
+	out += "  \"backgroundImage\": \"" + jsonEscape (p.backgroundImage) + "\",\n";
+	out += "  \"scalePercent\": " + std::to_string (p.scalePercent) + ",\n";
+	out += "  \"transparentBackground\": " + std::string (p.transparentBackground ? "true" : "false") +
+	      "\n";
 	out += "}\n";
 	return out;
 }

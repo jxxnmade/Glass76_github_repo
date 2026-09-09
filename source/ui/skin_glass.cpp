@@ -9,6 +9,7 @@
 //------------------------------------------------------------------------
 
 #include "skin_glass.h"
+#include "skin_hardware.h"
 
 #include "macdraw.h"
 #include "../params.h"
@@ -67,14 +68,29 @@ void GlassSkin::paintBackdrop (CDrawContext* context, const CRect& view,
                                const SkinContext& sc) const
 {
 	const mac::Theme& t = sc.theme;
+	const bool transparent = sc.host.transparentBackground ();
 
 	//--- window background ------------------------------------------
 	// #FFFFFF light / #1E1E1E dark [kit]. Aqua's #ECECEC is wrong here.
-	context->setFillColor (t.windowBg);
-	context->drawRect (view, kDrawFilled);
+	// Skipped entirely when transparent: the .uidesc template already
+	// declares transparent="true" at the window level for exactly this --
+	// leaving this rect unpainted is what lets the host's own window show
+	// through instead of this opaque wash.
+	if (!transparent)
+	{
+		context->setFillColor (t.windowBg);
+		context->drawRect (view, kDrawFilled);
+	}
 
 	CBitmap* bg = sc.host.backgroundImage ();
-	if (bg && bg->isLoaded ())
+	if (transparent)
+	{
+		// Neither the user's own wallpaper nor the wash stand-in belongs
+		// here: the whole point of this preference is seeing the host
+		// through the plug-in, and a wallpaper image (or even the faint
+		// washes) would cover that up again.
+	}
+	else if (bg && bg->isLoaded ())
 	{
 		//--- user background image --------------------------------------
 		// This is the actual wallpaper the wash gradients below normally
@@ -139,7 +155,7 @@ void GlassSkin::paintBackdrop (CDrawContext* context, const CRect& view,
 	//--- toolbar ----------------------------------------------------
 	// Square corners: it is flush with the window edge, and the host owns
 	// the window's own rounding. Radius 0 still gets the full edge stack.
-	mac::drawGlassPanel (context, toolbar, 0.0, t, false);
+	mac::drawGlassPanel (context, toolbar, 0.0, t, false, transparent);
 	{
 		CRect sep (toolbar.left, toolbar.bottom - 1, toolbar.right, toolbar.bottom);
 		context->setFillColor (t.separator);
@@ -156,7 +172,7 @@ void GlassSkin::paintBackdrop (CDrawContext* context, const CRect& view,
 	// over-glass set -- glass never composites on glass.
 	for (const auto& w : widgets)
 		if (w.kind == WidgetKind::Card)
-			mac::drawGlassPanel (context, w.r, mac::kGroupBoxRadius, t, true);
+			mac::drawGlassPanel (context, w.r, mac::kGroupBoxRadius, t, true, transparent);
 
 	//--- static text ------------------------------------------------
 	const auto& fonts = mac::Fonts::get ();
@@ -183,6 +199,8 @@ void GlassSkin::paintWidget (CDrawContext* context, const Widget& w, const SkinC
 		case WidgetKind::Card:
 		case WidgetKind::Label:
 			break;   // painted once, into the cached chrome -- see paintBackdrop
+		case WidgetKind::Knob:
+			break;   // Glass's layout never creates one -- see skin_hardware.cpp
 	}
 }
 
@@ -711,28 +729,80 @@ void GlassSkin::paintSettingsOverlay (CDrawContext* context, const CRect& view,
 		              selected ? t.accentGlyph : t.label1);
 	}
 
-	CRect sep2 (card.left + kCardPad, lastRateRect.bottom + 16, card.right - kCardPad,
-	           lastRateRect.bottom + 17);
+	// Window scale: no divider or heading of its own -- see the cardH
+	// comment in RootView::buildLayout for why there is no vertical room for
+	// one in this 470-tall design canvas. The "%" reads as distinct enough
+	// from "Hz" immediately above that this doesn't need restating.
+	static constexpr int kScaleChoices[5] = {25, 50, 100, 150, 200};
+	CRect lastScaleRect;
+	for (int i = 0; i < 5; i++)
+	{
+		const CRect& r = h.settingsScaleRect (i);
+		lastScaleRect = r;
+		const bool selected = (h.scalePercent () == kScaleChoices[i]);
+		const CCoord radius = mac::capsuleFor (r.getHeight ());
+		if (selected)
+			mac::fillSquircle (context, r, radius, t.accent);
+		else
+			mac::strokeSquircle (context, r, radius, t.chipRing, 1.0);
+		mac::drawText (context, fmt ("%d%%", kScaleChoices[i]).c_str (), r, kCenterText, fonts.body,
+		              selected ? t.accentGlyph : t.label1);
+	}
+
+	// Transparent background: an icon-only toggle riding the end of the
+	// scale row rather than a row of its own -- there is no text label here
+	// (no vertical room for one; see the cardH comment in
+	// RootView::buildLayout), so the glyph has to carry the meaning alone. A
+	// small two-tone checkerboard is the same "transparency" glyph every
+	// image editor uses for it.
+	{
+		const CRect& r = h.settingsTransparentRect ();
+		const bool on = h.transparentBackground ();
+		const CCoord radius = mac::capsuleFor (r.getHeight ());
+		if (on)
+			mac::fillSquircle (context, r, radius, t.accent);
+		else
+			mac::strokeSquircle (context, r, radius, t.chipRing, 1.0);
+
+		const CColor glyph = on ? t.accentGlyph : t.label1;
+		const CCoord cx = (r.left + r.right) * 0.5;
+		const CCoord cy = (r.top + r.bottom) * 0.5;
+		const CCoord half = std::min (r.getWidth (), r.getHeight ()) * 0.5 - 6.0;
+		context->setFillColor (glyph);
+		context->drawRect (CRect (cx - half, cy - half, cx, cy), kDrawFilled);
+		context->drawRect (CRect (cx, cy, cx + half, cy + half), kDrawFilled);
+	}
+
+	CRect sep2 (card.left + kCardPad, lastScaleRect.bottom + 16, card.right - kCardPad,
+	           lastScaleRect.bottom + 17);
 	context->setFillColor (t.separator);
 	context->drawRect (sep2, kDrawFilled);
 
-	// Skin: one full-width toggle, not the picker list stage 6 replaces this
-	// with once a second real skin exists -- but real enough now to be the
-	// thing that actually drives exchangeView.
+	// Skin: stage 6's real picker, one pill per skins::all() entry -- each
+	// individually selectable, replacing the old single "tap for the other"
+	// toggle. Still only two entries today, but this is what lets a third
+	// skin just add another pill rather than needing a different control.
 	CRect skinLabel (sep2.left, sep2.bottom + 10, sep2.left + 200, sep2.bottom + 28);
 	mac::drawText (context, "Skin", skinLabel, kLeftText, fonts.subhead, t.label2);
 
-	const bool isGlass = (h.currentSkinId () == SkinId::Glass);
-	const CRect& skinRect = h.settingsSkinRect ();
+	CRect lastSkinRect;
+	const auto& allSkins = skins::all ();
+	for (size_t i = 0; i < allSkins.size () && i < 2; i++)
 	{
-		const CCoord radius = mac::capsuleFor (skinRect.getHeight ());
-		mac::strokeSquircle (context, skinRect, radius, t.chipRing, 1.0);
-		mac::drawText (context, isGlass ? "Glass -- tap for Hardware" : "Hardware -- tap for Glass",
-		              skinRect, kCenterText, fonts.body, t.label1);
+		const CRect& r = h.settingsSkinRect (static_cast<int> (i));
+		lastSkinRect = r;
+		const bool selected = (allSkins[i]->id () == h.currentSkinId ());
+		const CCoord radius = mac::capsuleFor (r.getHeight ());
+		if (selected)
+			mac::fillSquircle (context, r, radius, t.accent);
+		else
+			mac::strokeSquircle (context, r, radius, t.chipRing, 1.0);
+		mac::drawText (context, allSkins[i]->name (), r, kCenterText, fonts.body,
+		              selected ? t.accentGlyph : t.label1);
 	}
 
-	CRect sep3 (card.left + kCardPad, skinRect.bottom + 16, card.right - kCardPad,
-	           skinRect.bottom + 17);
+	CRect sep3 (card.left + kCardPad, lastSkinRect.bottom + 16, card.right - kCardPad,
+	           lastSkinRect.bottom + 17);
 	context->setFillColor (t.separator);
 	context->drawRect (sep3, kDrawFilled);
 
@@ -755,23 +825,27 @@ void GlassSkin::paintSettingsOverlay (CDrawContext* context, const CRect& view,
 }
 
 //------------------------------------------------------------------------
-// The skin registry. Hardware currently resolves to the same GlassSkin
-// instance as Glass -- the hardware faceplate skin does not exist yet, and
-// nothing selects it: RootView still always paints the one Glass layout
-// until the faceplate/resize work lands.
+// The skin registry. Stage 5: Hardware is a real skin now, its own
+// instance with its own id() -- RootView::buildLayout() branches on
+// mSkin->id() to build the 1176-style faceplate widget list instead of
+// Glass's card layout, so this is the one place both have to agree with
+// each other on which id resolves to which instance.
 //------------------------------------------------------------------------
 namespace skins {
 
-const ISkin& get (SkinId /*id*/)
+const ISkin& get (SkinId id)
 {
 	static const GlassSkin glass;
-	return glass;
+	static const HardwareSkin hardware;
+	return (id == SkinId::Hardware) ? static_cast<const ISkin&> (hardware)
+	                                : static_cast<const ISkin&> (glass);
 }
 
 const std::vector<const ISkin*>& all ()
 {
 	static const std::vector<const ISkin*> list = [] {
 		std::vector<const ISkin*> v;
+		v.push_back (&get (SkinId::Hardware));
 		v.push_back (&get (SkinId::Glass));
 		return v;
 	} ();

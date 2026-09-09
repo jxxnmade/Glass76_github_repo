@@ -81,8 +81,8 @@ Glass76Processor::Glass76Processor ()
 
 	mInputNorm = stepToNormalized (kInputDefaultStep, kGainStepCount);
 	mOutputNorm = stepToNormalized (kOutputDefaultStep, kGainStepCount);
-	mAttackNorm = stepToNormalized (kAttackDefaultStep, kTimeStepCount);
-	mReleaseNorm = stepToNormalized (kReleaseDefaultStep, kTimeStepCount);
+	mAttackNorm = kAttackDefaultNormalized;
+	mReleaseNorm = kReleaseDefaultNormalized;
 	mRatioNorm = stepToNormalized (kRatioDefaultStep, kRatioStepCount);
 	mMeterNorm = stepToNormalized (kMeterDefaultStep, kMeterStepCount);
 	mAnalogNorm = stepToNormalized (kAnalogDefaultStep, kAnalogStepCount);
@@ -226,10 +226,8 @@ void Glass76Processor::updateDerived ()
 	mThresholdDb = kThresholdDb - (mAllButtonsIn ? 8.0 : 0.0);
 	mKneeDb = mAllButtonsIn ? 12.0 : 6.0;
 
-	const int attackStep = normalizedToStep (mAttackNorm, kTimeStepCount);
-	const int releaseStep = normalizedToStep (mReleaseNorm, kTimeStepCount);
-	double attackSeconds = attackStepToSeconds (attackStep);
-	double releaseSeconds = releaseStepToSeconds (releaseStep);
+	double attackSeconds = attackNormalizedToSeconds (mAttackNorm);
+	double releaseSeconds = releaseNormalizedToSeconds (mReleaseNorm);
 	if (mAllButtonsIn)
 	{
 		// The mode lags into the attack and lets go faster afterwards.

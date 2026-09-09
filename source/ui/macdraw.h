@@ -50,9 +50,14 @@ void drawSoftShadow (CDrawContext* context, const CRect& rect, CCoord radius,
     The kit's stack is eight inner shadows; VSTGUI has none, so each layer
     is reproduced as a clipped gradient or hairline. The order matters --
     the dark bands come BEFORE the highlight, which is what makes the slab
-    read as having thickness rather than as a bright-bordered rectangle. */
+    read as having thickness rather than as a bright-bordered rectangle.
+
+    skipFill drops step 2 (the solid glassFill) only -- shadow, edge stack
+    and containment ring are unchanged, so the panel still reads as a glass
+    slab, just with nothing opaque behind it. Used by the transparent-
+    background preference: see GlassSkin::paintBackdrop. */
 void drawGlassPanel (CDrawContext* context, const CRect& rect, CCoord radius,
-                     const Theme& theme, bool withShadow = true);
+                     const Theme& theme, bool withShadow = true, bool skipFill = false);
 
 //------------------------------------------------------------------------
 // Text
