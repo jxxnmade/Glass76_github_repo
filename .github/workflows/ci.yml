@@ -58,7 +58,42 @@ jobs:
         run: build\bin\Release\glass76_test.exe build\VST3\Release\Glass76.vst3
 
       - name: Install NSIS
-        run: choco install nsis --no-progress -y
+        # choco has reported success while leaving makensis.exe missing (seen
+        # twice in a row on 2026-09-10, right as GitHub force-migrated hosted
+        # Windows runners to Node 24 -- looks like an image-side regression,
+        # not anything in this repo). Verify after each attempt and fall back
+        # through the install methods build_installer.ps1's own error message
+        # already points people at, rather than trusting choco's exit code.
+        shell: pwsh
+        run: |
+          function Find-MakeNsis {
+            foreach ($dir in "${env:ProgramFiles(x86)}\NSIS", "${env:ProgramFiles}\NSIS") {
+              $exe = Join-Path $dir 'makensis.exe'
+              if (Test-Path $exe) { return $exe }
+            }
+            $cmd = Get-Command makensis -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+            return $null
+          }
+
+          choco install nsis --no-progress -y
+          $exe = Find-MakeNsis
+          if (-not $exe) {
+            Write-Host 'makensis.exe missing after choco install; forcing a clean reinstall.'
+            choco install nsis --no-progress -y --force
+            $exe = Find-MakeNsis
+          }
+          if (-not $exe) {
+            Write-Host 'Still missing after --force; trying winget.'
+            winget install --id NSIS.NSIS -e --silent --accept-source-agreements --accept-package-agreements
+            $exe = Find-MakeNsis
+          }
+          if (-not $exe) {
+            Write-Host 'Diagnostics -- contents of Program Files (x86):'
+            Get-ChildItem 'C:\Program Files (x86)' -ErrorAction SilentlyContinue | Format-Table Name
+            throw 'makensis.exe still missing after choco, choco --force, and winget.'
+          }
+          Write-Host "NSIS ready: $exe"
 
       - name: Build the installer
         run: |
