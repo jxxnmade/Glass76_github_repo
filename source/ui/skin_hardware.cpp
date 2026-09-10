@@ -189,6 +189,35 @@ void HardwareSkin::paintKnob (CDrawContext* context, const Widget& w, const Skin
 		}
 	}
 
+	// Printed mark ring -- the reference's own style of showing 1176 knob
+	// travel: a number at each detent, arranged around the same 135..405deg
+	// sweep the pointer itself travels. Purely a reference scale, like the
+	// Glass slider's own tick labels -- the knob stays fully continuous
+	// regardless of how many marks it carries; see buildLayout for what
+	// each knob's own mark set is.
+	if (w.detents > 1 && w.labels.size () == static_cast<size_t> (w.detents))
+	{
+		for (int i = 0; i < w.detents; i++)
+		{
+			const double f = static_cast<double> (i) / (w.detents - 1);
+			const double angleDeg = kKnobStartDeg + f * kKnobSweepDeg;
+			const double rad = angleDeg * kPi / 180.0;
+
+			const CCoord tickR0 = radius * 1.05, tickR1 = radius * 1.14;
+			const CPoint p0 (cx + std::cos (rad) * tickR0, cy + std::sin (rad) * tickR0);
+			const CPoint p1 (cx + std::cos (rad) * tickR1, cy + std::sin (rad) * tickR1);
+			context->setFrameColor (t.label3);
+			context->setLineWidth (1.0);
+			context->drawLine (p0, p1);
+
+			const CCoord labelR = radius * 1.26;
+			const CPoint lp (cx + std::cos (rad) * labelR, cy + std::sin (rad) * labelR);
+			CRect labelRect (lp.x - 15, lp.y - 6, lp.x + 15, lp.y + 6);
+			mac::drawText (context, w.labels[static_cast<size_t> (i)].c_str (), labelRect,
+			              kCenterText, fonts.caption, t.label3);
+		}
+	}
+
 	// Pointer.
 	{
 		const double angleDeg = kKnobStartDeg + std::clamp (w.shownNorm, 0.0, 1.0) * kKnobSweepDeg;
@@ -456,8 +485,11 @@ void HardwareSkin::paintGauge (CDrawContext* context, const SkinContext& sc) con
 	              mac::rgba (60, 54, 40, 1.0));
 
 	// Power/status LED above the meter, matching the reference's small
-	// round indicator -- decorative, not bound to a parameter.
-	CRect led (face.getCenter ().x - 6, face.top - 26, face.getCenter ().x + 6, face.top - 14);
+	// round indicator -- decorative, not bound to a parameter. Sits in the
+	// 10px gap between the "METER" label above it and the face below
+	// (RootView::buildLayout positions that label specifically to leave
+	// this room; the two were fighting for the same few pixels before).
+	CRect led (face.getCenter ().x - 6, face.top - 22, face.getCenter ().x + 6, face.top - 10);
 	context->setFillColor (t.accent);
 	auto ledPath = owned (context->createGraphicsPath ());
 	if (ledPath)

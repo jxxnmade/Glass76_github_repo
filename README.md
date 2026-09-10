@@ -11,12 +11,13 @@ MIT licensed.
 
 ![Glass76, dark appearance](docs/images/editor-dark.png)
 
-**2.0.0-alpha**: the Hardware skin, the skin picker, a per-skin window size,
-a user zoom control (25-200%), and continuous Attack/Release are all new in
-this release and have had comparatively little real-world use yet -- hence
-alpha, not a finished 2.0.0. See `CHANGELOG.md` for the full list and for
-what's still rough (the transparent-background preference currently leaves
-card fills opaque instead of fully see-through; see its own entry there).
+**2.0.0**: the Hardware skin, the skin picker, a per-skin window size, a
+user zoom control (25-200%), and continuous Attack/Release, with printed
+reference marks and a live decimal readout on Attack/Release, rotating
+Hardware knobs, and a labeled VU meter. See `CHANGELOG.md` for the full list
+and for what's still rough (the transparent-background preference currently
+leaves card fills opaque instead of fully see-through; see its own entry
+there).
 
 ## Install
 

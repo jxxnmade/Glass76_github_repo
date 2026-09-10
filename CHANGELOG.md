@@ -6,6 +6,43 @@ made with any version will always find the plug-in again.
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-09-09
+
+Promotes 2.0.0-alpha to the official release: the same Hardware skin, skin
+picker, window scale and continuous Attack/Release described below, plus
+three fixes found during the alpha's own hands-on testing. No further
+changes to any of the alpha's larger items, no parameter, automation or
+class ID changes from 2.0.0-alpha.
+
+### Plug-in
+
+- **Hardware knobs now rotate.** `RootView::onTimer()`'s easing loop only
+  animated `WidgetKind::Slider` toward its target value, so every Hardware
+  knob's pointer snapped straight to a new position instead of sweeping like
+  the sliders already did. Now eases `Slider` and `Knob` alike.
+- **Printed reference marks on every Hardware knob**, matching the CLA-76's
+  own practice of printing numbers around the knob rather than leaving the
+  scale to the pointer alone: Input/Output get the same nine gain marks the
+  value column already prints, Attack/Release get "1 3 5 7", Mix gets
+  "0 25 50 75 100", Trim gets "-18 -12 -6 0 +6 +12 +18". A ring of ticks and
+  labels drawn around the same 135°–405° sweep the pointer itself travels
+  (`HardwareSkin::paintKnob`); purely a reference scale like Glass's own
+  slider tick marks — the knob stays fully continuous underneath regardless
+  of how many marks it carries. `buildLayout`'s Hardware knob positions moved
+  down and apart to leave clearance above and between them for the 12
+  o'clock mark each large knob's own detent table lands on.
+- **Attack/Release now show the exact position, not just the four printed
+  marks.** Both the Glass slider's value readout and the Hardware knob's own
+  automation-lane string now read e.g. "4.29 (312 μs)" instead of just the
+  resolved time — the position figure is the same 1–7 scale printed at the
+  knob's four marks, read to 2 decimal places the way the real CLA-76 reads
+  its own knobs mid-turn, not just at a detent.
+- **VU meter panel labeled.** The Hardware meter was the one control group
+  with nothing naming it — Ratio has "RATIO" above its stack, every knob has
+  its own name underneath, the meter had neither. Added a "METER" label
+  above the gauge, matching that same rhythm; the existing decorative status
+  LED moved down slightly to keep clear of it.
+
 ## [2.0.0-alpha] — 2026-09-09
 
 Alpha: the five items below are all new this release and have had

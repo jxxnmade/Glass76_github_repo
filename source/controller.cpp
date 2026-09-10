@@ -126,13 +126,17 @@ public:
 
 	void toString (ParamValue normalized, String128 string) const SMTG_OVERRIDE
 	{
+		// 2 decimals on the position -- "4.29", not "4.3" -- matching the
+		// precision the real CLA-76 plug-in reads its own knobs at, and the
+		// same string RootView::attackText()/releaseText() show on-screen
+		// (see editor.cpp) so the automation lane and the UI never disagree.
 		const double position = 1.0 + std::clamp (normalized, 0.0, 1.0) * 6.0;
 		char text[32];
 		if (mIsAttack)
-			std::snprintf (text, sizeof (text), "%.1f (%.0f us)", position,
+			std::snprintf (text, sizeof (text), "%.2f (%.0f us)", position,
 			               attackNormalizedToSeconds (normalized) * 1e6);
 		else
-			std::snprintf (text, sizeof (text), "%.1f (%.0f ms)", position,
+			std::snprintf (text, sizeof (text), "%.2f (%.0f ms)", position,
 			               releaseNormalizedToSeconds (normalized) * 1e3);
 		UString (string, str16BufferSize (String128)).assign (text);
 	}

@@ -305,6 +305,7 @@ void GlassSkin::paintSegmented (CDrawContext* context, const Widget& seg,
 void GlassSkin::paintSlider (CDrawContext* context, const Widget& sl, const SkinContext& sc) const
 {
 	const mac::Theme& t = sc.theme;
+	const auto& fonts = mac::Fonts::get ();
 	const CCoord trackH = mac::kSliderTrackHeight;
 	const CCoord knobD = 18.0;
 
@@ -337,9 +338,15 @@ void GlassSkin::paintSlider (CDrawContext* context, const Widget& sl, const Skin
 			mac::fillSquircle (context, filled, trackH * 0.5, t.accent);
 	}
 
-	//--- tick marks ---------------------------------------------------
+	//--- tick marks -----------------------------------------------------
+	// Printed numbers underneath, when the widget carries them (Attack/
+	// Release's own "1 3 5 7", the CLA-76's own printed marks -- see
+	// RootView::buildLayout) -- purely a reference against the hardware
+	// panel, the same way the tick marks themselves already are; the
+	// control stays fully continuous either way.
 	if (sl.detents > 1)
 	{
+		const bool hasLabels = (sl.labels.size () == static_cast<size_t> (sl.detents));
 		context->setFillColor (t.label3);
 		for (int i = 0; i < sl.detents; i++)
 		{
@@ -347,6 +354,12 @@ void GlassSkin::paintSlider (CDrawContext* context, const Widget& sl, const Skin
 			const CCoord x = sl.r.left + knobD * 0.5 + travel * f;
 			CRect tick (x - 0.5, sl.r.top + 21.0, x + 0.5, sl.r.top + 25.0);
 			context->drawRect (tick, kDrawFilled);
+			if (hasLabels)
+			{
+				CRect labelR (x - 14.0, sl.r.top + 26.0, x + 14.0, sl.r.top + 36.0);
+				mac::drawText (context, sl.labels[static_cast<size_t> (i)].c_str (), labelR,
+				              kCenterText, fonts.caption, t.label3);
+			}
 		}
 	}
 	else if (sl.bipolar)

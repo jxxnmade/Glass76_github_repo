@@ -248,7 +248,8 @@ void RootView::buildLayout ()
 		mWidgets.push_back (std::move (w));
 	};
 	auto addKnob = [this] (const CRect& r, ParamID id, int detents, bool snap, bool bipolar,
-	                       double norm, double defaultNorm) {
+	                       double norm, double defaultNorm,
+	                       std::vector<std::string> tickLabels = {}) {
 		Widget w;
 		w.kind = WidgetKind::Knob;
 		w.r = r;
@@ -258,10 +259,12 @@ void RootView::buildLayout ()
 		w.bipolar = bipolar;
 		w.norm = norm;
 		w.defaultNorm = defaultNorm;
+		w.labels = std::move (tickLabels);   // printed around the knob; see paintKnob
 		mWidgets.push_back (std::move (w));
 	};
 	auto addSlider = [this] (const CRect& r, ParamID id, int detents, bool snap, bool bipolar,
-	                         double norm, double defaultNorm) {
+	                         double norm, double defaultNorm,
+	                         std::vector<std::string> tickLabels = {}) {
 		Widget w;
 		w.kind = WidgetKind::Slider;
 		w.r = r;
@@ -271,6 +274,7 @@ void RootView::buildLayout ()
 		w.bipolar = bipolar;
 		w.norm = norm;
 		w.defaultNorm = defaultNorm;
+		w.labels = std::move (tickLabels);   // printed under the ticks; see paintSlider
 		mWidgets.push_back (std::move (w));
 	};
 	auto addSwitch = [this] (const CRect& r, ParamID id, bool on) {
@@ -320,8 +324,13 @@ void RootView::buildLayout ()
 		// Row baselines. Everything below the toolbar sits on one panel --
 		// no cards -- split into a top zone (knobs, ratio, meter, meter
 		// select/comp-off) and a bottom strip (auto makeup, analog, mix,
-		// trim), same rhythm the reference photo uses.
-		constexpr CCoord kTopY = 70;
+		// trim), same rhythm the reference photo uses. kTopY sits 30px
+		// lower than the original placeholder layout specifically to leave
+		// room for the printed-mark ring the knobs below now carry: a mark
+		// can land at the knob's own 12-o'clock (any knob whose detent
+		// count puts a step at normalized 0.5, e.g. Input/Output's 9), and
+		// that needs real clearance above the knob, not just to its sides.
+		constexpr CCoord kTopY = 100;
 		constexpr CCoord kBottomStripY = 366;
 
 		auto knobLabel = [&] (const CRect& knobR, const char* text) {
@@ -329,38 +338,70 @@ void RootView::buildLayout ()
 			addLabel (lr, text, kCenterText, 1);
 		};
 
+		// Gain-mark labels for Input/Output's printed ring -- the same nine
+		// values gainStepText() already prints in the value column, just
+		// pre-formatted here since paintKnob has no access to the full
+		// kGainStepsDb table through a Widget alone.
+		auto fmtDb = [] (double db) {
+			if (db <= kGainMinusInfDb + 1.0)
+				return std::string (kMinus) + kInfinity;
+			char buf[16];
+			if (std::fabs (db - std::round (db)) < 1e-9)
+				std::snprintf (buf, sizeof (buf), "%d", static_cast<int> (std::lround (db)));
+			else
+				std::snprintf (buf, sizeof (buf), "%.1f", db);
+			return std::string (buf);
+		};
+		std::vector<std::string> gainMarkLabels;
+		for (int i = 0; i < kGainStepCount; i++)
+			gainMarkLabels.push_back (fmtDb (kGainStepsDb[i]));
+
+		// Cumulative x tracking rather than one long repeated sum per
+		// element: the label ring means every gap here has real clearance
+		// requirements now, not just "looks about right" spacing, and a
+		// chain of `52 + 132 + 40 + ...` repeated at every call site was
+		// exactly the kind of thing that silently drifts out of sync when
+		// only one of the copies gets edited.
+		CCoord x = 52;
+
 		//--- Input / Output: the two large attenuator knobs ----------------
+		constexpr CCoord kLargeD = 132;
+		constexpr CCoord kLargeGap = 64;   // clearance for both knobs' 12-o'clock marks
 		{
-			constexpr CCoord kD = 132;   // large-knob diameter
-			const CRect inputR (52, kTopY, 52 + kD, kTopY + kD);
-			const CRect outputR (52 + kD + 40, kTopY, 52 + kD + 40 + kD, kTopY + kD);
+			const CRect inputR (x, kTopY, x + kLargeD, kTopY + kLargeD);
+			x += kLargeD + kLargeGap;
+			const CRect outputR (x, kTopY, x + kLargeD, kTopY + kLargeD);
+			x += kLargeD;
 			addKnob (inputR, kParamInputId, kGainStepCount, false, false,
 			        stepToNormalized (kInputDefaultStep, kGainStepCount),
-			        stepToNormalized (kInputDefaultStep, kGainStepCount));
+			        stepToNormalized (kInputDefaultStep, kGainStepCount), gainMarkLabels);
 			knobLabel (inputR, "INPUT");
 			addKnob (outputR, kParamOutputId, kGainStepCount, false, false,
 			        stepToNormalized (kOutputDefaultStep, kGainStepCount),
-			        stepToNormalized (kOutputDefaultStep, kGainStepCount));
+			        stepToNormalized (kOutputDefaultStep, kGainStepCount), gainMarkLabels);
 			knobLabel (outputR, "OUTPUT");
 		}
 
 		//--- Attack / Release: two small knobs, stacked -------------------
+		constexpr CCoord kSmallD = 78;
 		{
-			constexpr CCoord kD = 78;
-			const CCoord x = 52 + 132 + 40 + 132 + 56;
-			const CRect attackR (x, kTopY, x + kD, kTopY + kD);
-			const CRect releaseR (x, kTopY + kD + 40, x + kD, kTopY + kD + 40 + kD);
-			addKnob (attackR, kParamAttackId, 0, false, false, kAttackDefaultNormalized,
-			        kAttackDefaultNormalized);
+			x += 56;
+			constexpr CCoord kStackGap = 50;   // clearance for both knobs' up-facing marks
+			const CRect attackR (x, kTopY, x + kSmallD, kTopY + kSmallD);
+			const CRect releaseR (x, kTopY + kSmallD + kStackGap, x + kSmallD,
+			                      kTopY + kSmallD + kStackGap + kSmallD);
+			x += kSmallD;
+			addKnob (attackR, kParamAttackId, 4, false, false, kAttackDefaultNormalized,
+			        kAttackDefaultNormalized, {"1", "3", "5", "7"});
 			knobLabel (attackR, "ATTACK");
-			addKnob (releaseR, kParamReleaseId, 0, false, false, kReleaseDefaultNormalized,
-			        kReleaseDefaultNormalized);
+			addKnob (releaseR, kParamReleaseId, 4, false, false, kReleaseDefaultNormalized,
+			        kReleaseDefaultNormalized, {"1", "3", "5", "7"});
 			knobLabel (releaseR, "RELEASE");
 		}
 
 		//--- Ratio: vertical 5-button stack, same param as Glass's own ----
 		{
-			const CCoord x = 52 + 132 + 40 + 132 + 56 + 78 + 48;
+			x += 48;
 			const CCoord w = 64;
 			const CCoord rowH = 32;
 			// seg.r is the whole stack's bounding box, not one row --
@@ -370,17 +411,28 @@ void RootView::buildLayout ()
 			             false, true);
 			CRect lr (x - 10, kTopY - 20, x + w + 10, kTopY - 2);
 			addLabel (lr, "RATIO", kCenterText, 2);
+			x += w;
 		}
 
 		//--- VU meter panel --------------------------------------------------
-		// paintGauge draws the meter itself into mGaugeRect; the "Glass76"
-		// wordmark below it is a plain Label like every other static text.
+		// paintGauge draws the meter itself into mGaugeRect, plus the status
+		// LED just above the face -- see its own comment there for exactly
+		// where, since it has to sit between this label and the face without
+		// touching either. The "Glass76" wordmark below the face is a plain
+		// Label like every other static text. "METER" above it all matches
+		// the section-label rhythm every other control group here already
+		// has (RATIO above its stack, a name under every knob) -- the gauge
+		// was the one control with no label naming it at all.
 		{
-			const CCoord x0 = 52 + 132 + 40 + 132 + 56 + 78 + 48 + 64 + 56;
+			x += 56;
+			const CCoord x0 = x;
 			const CCoord x1 = x0 + 320;
+			CRect meterLabel (x0, kTopY - 40, x1, kTopY - 22);
+			addLabel (meterLabel, "METER", kCenterText, 2);
 			mGaugeRect = R (x0 + 24, kTopY + 6, x1 - 24, kTopY + 150);
 			CRect logo (x0, kTopY + 160, x1, kTopY + 186);
 			addLabel (logo, "Glass76", kCenterText, 0);
+			x = x1;
 		}
 
 		//--- Meter select + Comp Off: a vertical stack matching the ref's --
@@ -388,7 +440,7 @@ void RootView::buildLayout ()
 		// (a Pill, not part of the Segmented group) exactly like the
 		// reference sets it apart with red instead of white.
 		{
-			const CCoord x = 52 + 132 + 40 + 132 + 56 + 78 + 48 + 64 + 56 + 320 + 40;
+			x += 40;
 			const CCoord w = 96;
 			const CCoord rowH = 32;
 			CRect meterR (x, kTopY, x + w, kTopY + rowH * 3);
@@ -409,14 +461,15 @@ void RootView::buildLayout ()
 			addSegmented (R (analogX, rowY, analogX + 220, rowY + mac::kSizeRg), kParamAnalogId,
 			             {"50 Hz", "60 Hz", "Off"}, kAnalogDefaultStep, false, false);
 
-			constexpr CCoord kSmallD = 78;
 			const CRect mixR (kW - 220, rowY - 24, kW - 220 + kSmallD, rowY - 24 + kSmallD);
-			addKnob (mixR, kParamMixId, 0, false, false, 1.0, 1.0);
+			addKnob (mixR, kParamMixId, 5, false, false, 1.0, 1.0,
+			        {"0", "25", "50", "75", "100"});
 			knobLabel (mixR, "MIX");
 
 			const CRect trimR (kW - 90, rowY - 24, kW - 90 + kSmallD, rowY - 24 + kSmallD);
-			addKnob (trimR, kParamTrimId, 0, false, true, trimDbToNormalized (kTrimDefaultDb),
-			        trimDbToNormalized (kTrimDefaultDb));
+			addKnob (trimR, kParamTrimId, 7, false, true, trimDbToNormalized (kTrimDefaultDb),
+			        trimDbToNormalized (kTrimDefaultDb),
+			        {"-18", "-12", "-6", "0", "+6", "+12", "+18"});
 			knobLabel (trimR, "TRIM");
 		}
 	}
@@ -528,12 +581,12 @@ void RootView::buildLayout ()
 		// the ticks are a reference, not a stop.
 		addLabel (R (kColLeftX + kCardPad, row1, labelR, row1 + h), "Attack", kRightText, 1);
 		addSlider (R (ctrlX, row1, ctrlR, row1 + h), kParamAttackId, 4, false, false,
-		          kAttackDefaultNormalized, kAttackDefaultNormalized);
+		          kAttackDefaultNormalized, kAttackDefaultNormalized, {"1", "3", "5", "7"});
 		mValueAttack = R (valueX, row1, valueR, row1 + h);
 
 		addLabel (R (kColLeftX + kCardPad, row2, labelR, row2 + h), "Release", kRightText, 1);
 		addSlider (R (ctrlX, row2, ctrlR, row2 + h), kParamReleaseId, 4, false, false,
-		          kReleaseDefaultNormalized, kReleaseDefaultNormalized);
+		          kReleaseDefaultNormalized, kReleaseDefaultNormalized, {"1", "3", "5", "7"});
 		mValueRelease = R (valueX, row2, valueR, row2 + h);
 
 		addLabel (R (kColLeftX + kCardPad, row3, labelR, row3 + h), "Ratio", kRightText, 1);
@@ -983,7 +1036,7 @@ void RootView::onTimer ()
 	constexpr double kControlEase = 0.45;
 	bool controlsChanged = false;
 	for (auto& w : mWidgets)
-		if (w.kind == WidgetKind::Slider)
+		if (w.kind == WidgetKind::Slider || w.kind == WidgetKind::Knob)
 			controlsChanged |= easeToward (w.shownNorm, w.norm, kControlEase);
 	for (auto& w : mWidgets)
 		if (w.kind == WidgetKind::Switch)
@@ -1227,13 +1280,20 @@ std::string RootView::gainStepText (ParamID id) const
 }
 
 //------------------------------------------------------------------------
+// Position shown to 2 decimals ("4.29"), the way the real CLA-76 plug-in
+// reads its own Attack/Release knobs mid-drag, not just at the four
+// printed marks -- paired with the resolved time, matching the string the
+// TimeConstantParameter automation lane itself reports (see controller.cpp)
+// so the on-screen readout and what a host shows for the same value never
+// disagree.
 std::string RootView::attackText () const
 {
 	double norm = kAttackDefaultNormalized;
 	if (const auto* w = findValueWidget (kParamAttackId))
 		norm = w->norm;
+	const double position = 1.0 + std::clamp (norm, 0.0, 1.0) * 6.0;
 	const double us = attackNormalizedToSeconds (norm) * 1e6;
-	return fmt ("%d %ss", static_cast<int> (std::lround (us)), kMicro);
+	return fmt ("%.2f (%d %ss)", position, static_cast<int> (std::lround (us)), kMicro);
 }
 
 //------------------------------------------------------------------------
@@ -1242,8 +1302,9 @@ std::string RootView::releaseText () const
 	double norm = kReleaseDefaultNormalized;
 	if (const auto* w = findValueWidget (kParamReleaseId))
 		norm = w->norm;
+	const double position = 1.0 + std::clamp (norm, 0.0, 1.0) * 6.0;
 	const double ms = releaseNormalizedToSeconds (norm) * 1e3;
-	return fmt ("%d ms", static_cast<int> (std::lround (ms)));
+	return fmt ("%.2f (%d ms)", position, static_cast<int> (std::lround (ms)));
 }
 
 //------------------------------------------------------------------------
